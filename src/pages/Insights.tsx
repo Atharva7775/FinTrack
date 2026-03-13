@@ -1,6 +1,10 @@
 import { motion } from "framer-motion";
 import { useFinanceStore, categoryColors, type Category } from "@/store/financeStore";
-import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle } from "lucide-react";
+import { CursorTooltip } from "@/components/CursorTooltip";
+import { getCurrentMonthKey, getPrevMonthKey } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Info } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -15,11 +19,30 @@ const item = {
   show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
+const DASHBOARD_FIELD_GUIDE = [
+  { term: "Total Income", description: "Total money received this month from salary, freelance, investments, and other income sources." },
+  { term: "Total Expenses", description: "Total money spent this month across all expense categories (rent, food, travel, subscriptions, etc.)." },
+  { term: "Net Savings", description: "Income minus expenses for this month. Positive means you saved; negative means you spent more than you earned." },
+  { term: "Savings Rate", description: "Percentage of your income that you saved this month (Net savings ÷ Total income × 100)." },
+  { term: "Income vs Expenses", description: "Bar chart comparing your total income and total expenses for each of the last few months." },
+  { term: "Expense Breakdown", description: "Pie chart showing how this month's expenses are split by category (e.g. rent, food, travel)." },
+  { term: "Savings Trend", description: "Line chart showing your net savings (income minus expenses) for each of the last few months." },
+];
+
+const INSIGHTS_FIELD_GUIDE = [
+  { term: "Safe to Spend", description: "Income this month minus the total monthly contributions for all your goals. Money you can spend without affecting goal progress." },
+  { term: "Monthly Goal Contributions", description: "Sum of monthly contributions set for all your savings goals. Total you plan to put toward goals each month." },
+  { term: "Expense Trend", description: "Percentage change in expenses compared to last month. Positive means you spent more; negative means you spent less." },
+  { term: "Spending Insights", description: "Automatically generated tips and alerts based on your spending and goals (e.g. expense changes, category spikes, goal progress)." },
+  { term: "Recommended Budget (50/30/20)", description: "Suggested split: 50% of income for needs, 30% for wants, 20% for savings. Amounts shown are based on this month's income." },
+  { term: "Top Spending Categories", description: "Bar chart of how much you spent in each category this month (e.g. Food, Rent, Travel)." },
+];
+
 export default function Insights() {
   const { transactions, goals } = useFinanceStore();
 
-  const currentMonth = "2026-02";
-  const prevMonth = "2026-01";
+  const currentMonth = getCurrentMonthKey();
+  const prevMonth = getPrevMonthKey();
   const current = transactions.filter((t) => t.date.startsWith(currentMonth));
   const prev = transactions.filter((t) => t.date.startsWith(prevMonth));
 
@@ -79,37 +102,92 @@ export default function Insights() {
 
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
-      <div>
-        <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Insights</h1>
-        <p className="text-muted-foreground text-sm mt-1">AI-powered spending analysis</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Insights</h1>
+          <p className="text-muted-foreground text-sm mt-1">AI-powered spending analysis</p>
+        </div>
+        <Dialog>
+          <CursorTooltip content="Hover and click to see what each Dashboard and Insights metric means.">
+            <DialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+                aria-label="What do these fields mean?"
+              >
+                <Info className="h-5 w-5" />
+              </Button>
+            </DialogTrigger>
+          </CursorTooltip>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="font-display">What each field means</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-6 pt-2 pr-2 max-h-[60vh] overflow-y-auto">
+              <section>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Dashboard overview</p>
+                <ul className="space-y-3">
+                  {DASHBOARD_FIELD_GUIDE.map(({ term, description }) => (
+                    <li key={term}>
+                      <p className="font-medium text-foreground text-sm">{term}</p>
+                      <p className="text-muted-foreground text-sm mt-0.5">{description}</p>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+              <section>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Insights overview</p>
+                <ul className="space-y-3">
+                  {INSIGHTS_FIELD_GUIDE.map(({ term, description }) => (
+                    <li key={term}>
+                      <p className="font-medium text-foreground text-sm">{term}</p>
+                      <p className="text-muted-foreground text-sm mt-0.5">{description}</p>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {/* Key metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <motion.div variants={item} className="glass-card rounded-2xl p-5">
-          <p className="text-sm text-muted-foreground mb-1">Safe to Spend</p>
-          <p className="text-2xl font-display font-bold text-foreground">${safeToSpend.toLocaleString()}</p>
-          <p className="text-xs text-muted-foreground mt-1">After goals & savings</p>
-        </motion.div>
-        <motion.div variants={item} className="glass-card rounded-2xl p-5">
-          <p className="text-sm text-muted-foreground mb-1">Monthly Goal Contributions</p>
-          <p className="text-2xl font-display font-bold text-foreground">${totalGoalMonthly.toLocaleString()}</p>
-          <p className="text-xs text-muted-foreground mt-1">{goals.length} active goals</p>
-        </motion.div>
-        <motion.div variants={item} className="glass-card rounded-2xl p-5">
-          <p className="text-sm text-muted-foreground mb-1">Expense Trend</p>
-          <p className={`text-2xl font-display font-bold ${expenseChange > 0 ? "text-expense" : "text-income"}`}>
-            {expenseChange > 0 ? "+" : ""}{expenseChange.toFixed(1)}%
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">vs last month</p>
-        </motion.div>
+        <CursorTooltip content="Income this month minus the total monthly contributions for all your goals. Money you can spend without affecting goal progress.">
+          <motion.div variants={item} className="glass-card rounded-2xl p-5">
+            <p className="text-sm text-muted-foreground mb-1">Safe to Spend</p>
+            <p className="text-2xl font-display font-bold text-foreground">${safeToSpend.toLocaleString()}</p>
+            <p className="text-xs text-muted-foreground mt-1">After goals & savings</p>
+          </motion.div>
+        </CursorTooltip>
+        <CursorTooltip content="Sum of monthly contributions set for all your savings goals. Total you plan to put toward goals each month.">
+          <motion.div variants={item} className="glass-card rounded-2xl p-5">
+            <p className="text-sm text-muted-foreground mb-1">Monthly Goal Contributions</p>
+            <p className="text-2xl font-display font-bold text-foreground">${totalGoalMonthly.toLocaleString()}</p>
+            <p className="text-xs text-muted-foreground mt-1">{goals.length} active goals</p>
+          </motion.div>
+        </CursorTooltip>
+        <CursorTooltip content="Percentage change in expenses compared to last month. Positive means you spent more; negative means you spent less.">
+          <motion.div variants={item} className="glass-card rounded-2xl p-5">
+            <p className="text-sm text-muted-foreground mb-1">Expense Trend</p>
+            <p className={`text-2xl font-display font-bold ${expenseChange > 0 ? "text-expense" : "text-income"}`}>
+              {expenseChange > 0 ? "+" : ""}{expenseChange.toFixed(1)}%
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">vs last month</p>
+          </motion.div>
+        </CursorTooltip>
       </div>
 
       {/* Insights cards */}
       <motion.div variants={item} className="space-y-2">
-        <h3 className="font-display font-semibold text-foreground">Spending Insights</h3>
+        <CursorTooltip content="Automatically generated tips and alerts based on your spending and goals (e.g. expense changes, category spikes).">
+          <h3 className="font-display font-semibold text-foreground">Spending Insights</h3>
+        </CursorTooltip>
         {insights.length === 0 && (
-          <p className="text-sm text-muted-foreground">Looking good! No alerts this month.</p>
+          <CursorTooltip content="No warnings or suggestions this month. Your spending and goals look consistent.">
+            <p className="text-sm text-muted-foreground">Looking good! No alerts this month.</p>
+          </CursorTooltip>
         )}
         {insights.map((ins, i) => {
           const Icon = IconMap[ins.type];
@@ -126,20 +204,23 @@ export default function Insights() {
 
       {/* Budget allocation */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <motion.div variants={item} className="glass-card rounded-2xl p-6">
-          <h3 className="font-display font-semibold text-foreground mb-4">Recommended Budget (50/30/20)</h3>
-          <div className="space-y-3">
-            {budgetSuggestions.map((b) => (
-              <div key={b.label} className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">{b.label}</span>
-                <span className="font-display font-semibold text-foreground">${b.amount.toLocaleString()}</span>
-              </div>
-            ))}
-          </div>
-        </motion.div>
+        <CursorTooltip content="Suggested split: 50% needs, 30% wants, 20% savings. Amounts are based on this month’s income.">
+          <motion.div variants={item} className="glass-card rounded-2xl p-6">
+            <h3 className="font-display font-semibold text-foreground mb-4">Recommended Budget (50/30/20)</h3>
+            <div className="space-y-3">
+              {budgetSuggestions.map((b) => (
+                <div key={b.label} className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">{b.label}</span>
+                  <span className="font-display font-semibold text-foreground">${b.amount.toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        </CursorTooltip>
 
-        <motion.div variants={item} className="glass-card rounded-2xl p-6">
-          <h3 className="font-display font-semibold text-foreground mb-4">Top Spending Categories</h3>
+        <CursorTooltip content="Bar chart of how much you spent in each category this month (e.g. Food, Rent, Travel).">
+          <motion.div variants={item} className="glass-card rounded-2xl p-6">
+            <h3 className="font-display font-semibold text-foreground mb-4">Top Spending Categories</h3>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={catData} layout="vertical">
               <XAxis type="number" tick={{ fontSize: 11, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
@@ -150,7 +231,8 @@ export default function Insights() {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-        </motion.div>
+          </motion.div>
+        </CursorTooltip>
       </div>
     </motion.div>
   );

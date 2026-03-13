@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, Trash2, Target } from "lucide-react";
+import { Plus, Trash2, Target, Wallet, Zap } from "lucide-react";
 import { useFinanceStore, type Goal } from "@/store/financeStore";
+import { CursorTooltip } from "@/components/CursorTooltip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Progress } from "@/components/ui/progress";
+import { getCurrentMonthKey } from "@/lib/utils";
+import { GoalOptimizerModal } from "@/components/GoalOptimizerModal";
 
 const container = {
   hidden: { opacity: 0 },
@@ -57,10 +59,20 @@ function MilestoneIndicator({ percent }: { percent: number }) {
   );
 }
 
+function contributionThisMonth(goal: Goal): number {
+  const currentMonth = getCurrentMonthKey();
+  return (goal.contributions || []).filter((c) => c.date.startsWith(currentMonth)).reduce((s, c) => s + c.amount, 0);
+}
+
 export default function Goals() {
-  const { goals, addGoal, deleteGoal, updateGoal } = useFinanceStore();
+  const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution } = useFinanceStore();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ title: "", targetAmount: "", currentAmount: "0", deadline: "2026-08-01", monthlyContribution: "" });
+  const [contributionGoalId, setContributionGoalId] = useState<string | null>(null);
+  const [contributionAmount, setContributionAmount] = useState("");
+  const [contributionDate, setContributionDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [optimizerGoalId, setOptimizerGoalId] = useState<string | null>(null);
+  const currentMonth = getCurrentMonthKey();
 
   const handleSubmit = () => {
     const target = parseFloat(form.targetAmount);
@@ -72,6 +84,15 @@ export default function Goals() {
     setForm({ title: "", targetAmount: "", currentAmount: "0", deadline: "2026-08-01", monthlyContribution: "" });
   };
 
+  const handleRecordContribution = () => {
+    const amount = parseFloat(contributionAmount);
+    if (!contributionGoalId || !amount || amount <= 0) return;
+    addGoalContribution(contributionGoalId, amount, contributionDate);
+    setContributionGoalId(null);
+    setContributionAmount("");
+    setContributionDate(new Date().toISOString().slice(0, 10));
+  };
+
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -79,9 +100,11 @@ export default function Goals() {
           <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Savings Goals</h1>
           <p className="text-muted-foreground text-sm mt-1">Track progress toward your financial milestones</p>
         </div>
-        <Button onClick={() => setOpen(true)} className="gap-2">
-          <Plus className="h-4 w-4" /> New Goal
-        </Button>
+        <CursorTooltip content="Open the form to create a new savings goal (e.g. emergency fund, vacation).">
+          <Button onClick={() => setOpen(true)} className="gap-2">
+            <Plus className="h-4 w-4" /> New Goal
+          </Button>
+        </CursorTooltip>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
@@ -102,9 +125,11 @@ export default function Goals() {
                     <p className="text-xs text-muted-foreground">Due {goal.deadline}</p>
                   </div>
                 </div>
-                <button onClick={() => deleteGoal(goal.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
-                  <Trash2 className="h-4 w-4 text-muted-foreground" />
-                </button>
+                <CursorTooltip content="Delete this goal permanently. Progress is not recovered.">
+                  <button onClick={() => deleteGoal(goal.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
+                    <Trash2 className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                </CursorTooltip>
               </div>
 
               <div className="flex items-center gap-4 mb-4">
@@ -129,9 +154,15 @@ export default function Goals() {
                   <span className="font-medium text-foreground">${remaining.toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Monthly</span>
+                  <span className="text-muted-foreground">Planned / mo</span>
                   <span className="font-medium text-foreground">${goal.monthlyContribution.toLocaleString()}/mo</span>
                 </div>
+                {contributionThisMonth(goal) > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">This month</span>
+                    <span className="font-medium text-primary">+${contributionThisMonth(goal).toLocaleString()} contributed</span>
+                  </div>
+                )}
                 {monthsLeft !== null && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Est. completion</span>
@@ -140,22 +171,61 @@ export default function Goals() {
                 )}
               </div>
 
-              {/* Quick add */}
-              <div className="mt-4 flex gap-2">
-                {[50, 100, 200].map((amt) => (
-                  <button
-                    key={amt}
-                    onClick={() => updateGoal(goal.id, { currentAmount: Math.min(goal.currentAmount + amt, goal.targetAmount) })}
-                    className="flex-1 py-1.5 text-xs font-medium rounded-lg bg-muted hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors"
-                  >
-                    +${amt}
-                  </button>
-                ))}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <CursorTooltip content="Record money you set aside this month for this goal (e.g. from your income).">
+                  <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { setContributionGoalId(goal.id); setContributionAmount(""); setContributionDate(new Date().toISOString().slice(0, 10)); }}>
+                    <Wallet className="h-3.5 w-3.5" /> Record contribution
+                  </Button>
+                </CursorTooltip>
+                <CursorTooltip content="Get a plan to reach this goal faster: required savings, spending cuts, and revised timeline.">
+                  <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setOptimizerGoalId(goal.id)}>
+                    <Zap className="h-3.5 w-3.5" /> Optimize
+                  </Button>
+                </CursorTooltip>
               </div>
+
+              <CursorTooltip content="Quick-add this amount to the current saved amount for this goal (capped at target).">
+                <div className="mt-3 flex gap-2">
+                  {[50, 100, 200].map((amt) => (
+                    <button
+                      key={amt}
+                      onClick={() => updateGoal(goal.id, { currentAmount: Math.min(goal.currentAmount + amt, goal.targetAmount) })}
+                      className="flex-1 py-1.5 text-xs font-medium rounded-lg bg-muted hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors"
+                    >
+                      +${amt}
+                    </button>
+                  ))}
+                </div>
+              </CursorTooltip>
             </motion.div>
           );
         })}
       </div>
+
+      {/* Record contribution dialog */}
+      <Dialog open={!!contributionGoalId} onOpenChange={(o) => !o && setContributionGoalId(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-display">Record contribution</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">Log money you set aside for this goal (e.g. monthly allocation from income).</p>
+          <div className="space-y-4 pt-2">
+            <div>
+              <Label>Amount ($)</Label>
+              <Input type="number" placeholder="0" value={contributionAmount} onChange={(e) => setContributionAmount(e.target.value)} />
+            </div>
+            <div>
+              <Label>Date</Label>
+              <Input type="date" value={contributionDate} onChange={(e) => setContributionDate(e.target.value)} />
+            </div>
+            <Button onClick={handleRecordContribution} className="w-full" disabled={!contributionAmount || parseFloat(contributionAmount) <= 0}>Add contribution</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {optimizerGoalId && (
+        <GoalOptimizerModal goalId={optimizerGoalId} onClose={() => setOptimizerGoalId(null)} />
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
@@ -163,12 +233,24 @@ export default function Goals() {
             <DialogTitle className="font-display">Create Savings Goal</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-2">
-            <div><Label>Goal Title</Label><Input placeholder="e.g., Emergency Fund" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
-            <div><Label>Target Amount</Label><Input type="number" placeholder="10000" value={form.targetAmount} onChange={(e) => setForm({ ...form, targetAmount: e.target.value })} /></div>
-            <div><Label>Current Amount</Label><Input type="number" placeholder="0" value={form.currentAmount} onChange={(e) => setForm({ ...form, currentAmount: e.target.value })} /></div>
-            <div><Label>Monthly Contribution</Label><Input type="number" placeholder="500" value={form.monthlyContribution} onChange={(e) => setForm({ ...form, monthlyContribution: e.target.value })} /></div>
-            <div><Label>Deadline</Label><Input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} /></div>
-            <Button onClick={handleSubmit} className="w-full">Create Goal</Button>
+            <CursorTooltip content="A short name for your goal (e.g. Emergency Fund, New Car).">
+              <div><Label>Goal Title</Label><Input placeholder="e.g., Emergency Fund" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
+            </CursorTooltip>
+            <CursorTooltip content="The total amount you want to save for this goal in dollars.">
+              <div><Label>Target Amount</Label><Input type="number" placeholder="10000" value={form.targetAmount} onChange={(e) => setForm({ ...form, targetAmount: e.target.value })} /></div>
+            </CursorTooltip>
+            <CursorTooltip content="How much you have already saved toward this goal so far.">
+              <div><Label>Current Amount</Label><Input type="number" placeholder="0" value={form.currentAmount} onChange={(e) => setForm({ ...form, currentAmount: e.target.value })} /></div>
+            </CursorTooltip>
+            <CursorTooltip content="How much you plan to add to this goal each month (used to estimate time to reach target).">
+              <div><Label>Monthly Contribution</Label><Input type="number" placeholder="500" value={form.monthlyContribution} onChange={(e) => setForm({ ...form, monthlyContribution: e.target.value })} /></div>
+            </CursorTooltip>
+            <CursorTooltip content="Target date by which you want to reach this goal.">
+              <div><Label>Deadline</Label><Input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} /></div>
+            </CursorTooltip>
+            <CursorTooltip content="Save this goal and add it to your list.">
+              <Button onClick={handleSubmit} className="w-full">Create Goal</Button>
+            </CursorTooltip>
           </div>
         </DialogContent>
       </Dialog>

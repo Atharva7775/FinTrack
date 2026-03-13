@@ -5,10 +5,10 @@ export type TransactionType = 'income' | 'expense';
 export type Category =
   | 'Salary' | 'Freelance' | 'Investments' | 'Other Income'
   | 'Rent' | 'Food' | 'Travel' | 'Subscriptions' | 'Shopping'
-  | 'Utilities' | 'Healthcare' | 'Entertainment' | 'Education' | 'Other';
+  | 'Utilities' | 'Healthcare' | 'Entertainment' | 'Education' | 'Savings' | 'Other';
 
 export const incomeCategories: Category[] = ['Salary', 'Freelance', 'Investments', 'Other Income'];
-export const expenseCategories: Category[] = ['Rent', 'Food', 'Travel', 'Subscriptions', 'Shopping', 'Utilities', 'Healthcare', 'Entertainment', 'Education', 'Other'];
+export const expenseCategories: Category[] = ['Rent', 'Food', 'Travel', 'Subscriptions', 'Shopping', 'Utilities', 'Healthcare', 'Entertainment', 'Education', 'Savings', 'Other'];
 
 export const categoryColors: Record<Category, string> = {
   Salary: 'hsl(172, 66%, 38%)',
@@ -24,6 +24,7 @@ export const categoryColors: Record<Category, string> = {
   Healthcare: 'hsl(0, 72%, 55%)',
   Entertainment: 'hsl(270, 55%, 55%)',
   Education: 'hsl(190, 65%, 45%)',
+  Savings: 'hsl(142, 52%, 42%)',
   Other: 'hsl(210, 10%, 55%)',
 };
 
@@ -36,6 +37,11 @@ export interface Transaction {
   note: string;
 }
 
+export interface GoalContribution {
+  date: string; // YYYY-MM-DD
+  amount: number;
+}
+
 export interface Goal {
   id: string;
   title: string;
@@ -43,51 +49,37 @@ export interface Goal {
   currentAmount: number;
   deadline: string;
   monthlyContribution: number;
+  contributions?: GoalContribution[];
+}
+
+export interface HydratePayload {
+  transactions: Transaction[];
+  goals: Goal[];
+  savingsBalance: number;
 }
 
 interface FinanceStore {
   transactions: Transaction[];
   goals: Goal[];
+  savingsBalance: number;
   addTransaction: (t: Omit<Transaction, 'id'>) => void;
   deleteTransaction: (id: string) => void;
   updateTransaction: (id: string, t: Partial<Transaction>) => void;
   addGoal: (g: Omit<Goal, 'id'>) => void;
   updateGoal: (id: string, g: Partial<Goal>) => void;
   deleteGoal: (id: string) => void;
+  addGoalContribution: (goalId: string, amount: number, date: string) => void;
+  setSavingsBalance: (amount: number) => void;
+  /** Load data from database; also resets nextId from max existing id */
+  hydrate: (payload: HydratePayload) => void;
 }
 
-const sampleTransactions: Transaction[] = [
-  { id: '1', type: 'income', amount: 5200, category: 'Salary', date: '2026-02-01', note: 'Monthly salary' },
-  { id: '2', type: 'income', amount: 800, category: 'Freelance', date: '2026-02-05', note: 'Design project' },
-  { id: '3', type: 'expense', amount: 1400, category: 'Rent', date: '2026-02-01', note: 'Apartment rent' },
-  { id: '4', type: 'expense', amount: 320, category: 'Food', date: '2026-02-03', note: 'Groceries' },
-  { id: '5', type: 'expense', amount: 150, category: 'Subscriptions', date: '2026-02-02', note: 'Software subs' },
-  { id: '6', type: 'expense', amount: 200, category: 'Travel', date: '2026-02-07', note: 'Weekend trip gas' },
-  { id: '7', type: 'expense', amount: 85, category: 'Entertainment', date: '2026-02-10', note: 'Concert tickets' },
-  { id: '8', type: 'expense', amount: 120, category: 'Shopping', date: '2026-02-12', note: 'New shoes' },
-  { id: '9', type: 'income', amount: 300, category: 'Investments', date: '2026-02-15', note: 'Dividend payout' },
-  { id: '10', type: 'expense', amount: 95, category: 'Utilities', date: '2026-02-01', note: 'Electric bill' },
-  // January
-  { id: '11', type: 'income', amount: 5200, category: 'Salary', date: '2026-01-01', note: 'Monthly salary' },
-  { id: '12', type: 'income', amount: 600, category: 'Freelance', date: '2026-01-10', note: 'Logo design' },
-  { id: '13', type: 'expense', amount: 1400, category: 'Rent', date: '2026-01-01', note: 'Apartment rent' },
-  { id: '14', type: 'expense', amount: 280, category: 'Food', date: '2026-01-05', note: 'Groceries' },
-  { id: '15', type: 'expense', amount: 150, category: 'Subscriptions', date: '2026-01-02', note: 'Software subs' },
-  { id: '16', type: 'expense', amount: 450, category: 'Travel', date: '2026-01-20', note: 'Flight tickets' },
-  { id: '17', type: 'expense', amount: 90, category: 'Utilities', date: '2026-01-01', note: 'Electric bill' },
-];
-
-const sampleGoals: Goal[] = [
-  { id: '1', title: 'Emergency Fund', targetAmount: 10000, currentAmount: 4500, deadline: '2026-08-01', monthlyContribution: 800 },
-  { id: '2', title: 'Vacation Fund', targetAmount: 3000, currentAmount: 1200, deadline: '2026-06-01', monthlyContribution: 450 },
-  { id: '3', title: 'New Laptop', targetAmount: 2000, currentAmount: 1600, deadline: '2026-04-01', monthlyContribution: 200 },
-];
-
-let nextId = 100;
+let nextId = 1;
 
 export const useFinanceStore = create<FinanceStore>((set) => ({
-  transactions: sampleTransactions,
-  goals: sampleGoals,
+  transactions: [],
+  goals: [],
+  savingsBalance: 0,
   addTransaction: (t) => set((s) => ({
     transactions: [{ ...t, id: String(nextId++) }, ...s.transactions],
   })),
@@ -98,7 +90,7 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
     transactions: s.transactions.map((t) => t.id === id ? { ...t, ...updates } : t),
   })),
   addGoal: (g) => set((s) => ({
-    goals: [...s.goals, { ...g, id: String(nextId++) }],
+    goals: [...s.goals, { ...g, id: String(nextId++), contributions: [] }],
   })),
   updateGoal: (id, updates) => set((s) => ({
     goals: s.goals.map((g) => g.id === id ? { ...g, ...updates } : g),
@@ -106,4 +98,31 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
   deleteGoal: (id) => set((s) => ({
     goals: s.goals.filter((g) => g.id !== id),
   })),
+  addGoalContribution: (goalId, amount, date) => set((s) => {
+    const goal = s.goals.find((g) => g.id === goalId);
+    const title = goal?.title ?? 'Goal';
+    const newTx: Omit<Transaction, 'id'> = {
+      type: 'expense',
+      amount,
+      category: 'Savings',
+      date,
+      note: `Contribution to ${title}`,
+    };
+    return {
+      transactions: [{ ...newTx, id: String(nextId++) }, ...s.transactions],
+      goals: s.goals.map((g) => {
+        if (g.id !== goalId) return g;
+        const contributions = [...(g.contributions || []), { date, amount }];
+        return { ...g, currentAmount: g.currentAmount + amount, contributions };
+      }),
+    };
+  }),
+  setSavingsBalance: (amount) => set({ savingsBalance: amount }),
+  hydrate: (payload) => {
+    let maxId = 0;
+    payload.transactions.forEach((t) => { const n = parseInt(t.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
+    payload.goals.forEach((g) => { const n = parseInt(g.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
+    nextId = maxId + 1;
+    set({ transactions: payload.transactions, goals: payload.goals, savingsBalance: payload.savingsBalance });
+  },
 }));

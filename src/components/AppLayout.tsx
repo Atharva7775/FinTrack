@@ -11,9 +11,14 @@ import {
   Menu,
   X,
   FlaskConical,
+  LogOut,
+  LogIn,
+  User,
 } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useAuth } from "@/hooks/useAuth";
+import { useFinanceStore } from "@/store/financeStore";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard, tooltip: "View your monthly income, expenses, savings, and charts at a glance." },
@@ -77,6 +82,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <span className="font-display text-lg font-semibold text-foreground">FinTrack AI</span>
             </div>
           </CursorTooltip>
+          <div className="ml-auto">
+            <UserMenu />
+          </div>
         </header>
 
         <main className="flex-1 p-4 lg:p-8">
@@ -88,6 +96,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () => void }) {
+  const { viewMode } = useFinanceStore();
+  const visibleNavItems = navItems.filter(item => 
+    viewMode === "splitwise" ? item.title !== "Insights" : true
+  );
+
   return (
     <div className="flex flex-col h-full">
       <div className="p-6 flex items-center justify-between">
@@ -109,7 +122,7 @@ function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () 
       </div>
 
       <nav className="flex-1 px-3 space-y-1">
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const isActive = pathname === item.url || (item.url !== "/" && pathname.startsWith(item.url));
           return (
             <CursorTooltip key={item.url} content={item.tooltip}>
@@ -139,6 +152,85 @@ function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () 
           </p>
         </div>
       </CursorTooltip>
+    </div>
+  );
+}
+
+/** User avatar / sign-in button shown in the top header bar. */
+function UserMenu() {
+  const { user, signIn, signOut } = useAuth();
+  const [open, setOpen] = useState(false);
+
+  if (!user) {
+    return (
+      <CursorTooltip content="Sign in with Google to personalise your dashboard and email statements.">
+        <button
+          onClick={signIn}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-border hover:bg-muted transition-colors text-sm font-medium text-muted-foreground hover:text-foreground"
+        >
+          <LogIn className="h-4 w-4" />
+          <span className="hidden sm:inline">Sign in</span>
+        </button>
+      </CursorTooltip>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <CursorTooltip content={`Signed in as ${user.email}. Click to sign out.`}>
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-2 px-2 py-1.5 rounded-xl hover:bg-muted transition-colors"
+        >
+          {user.picture ? (
+            <img
+              src={user.picture}
+              alt={user.name}
+              className="w-7 h-7 rounded-full object-cover ring-2 ring-primary/30"
+            />
+          ) : (
+            <div className="w-7 h-7 rounded-full bg-primary/15 flex items-center justify-center">
+              <User className="h-4 w-4 text-primary" />
+            </div>
+          )}
+          <span className="hidden sm:inline text-sm font-medium text-foreground max-w-[120px] truncate">
+            {user.name.split(" ")[0]}
+          </span>
+        </button>
+      </CursorTooltip>
+
+      <AnimatePresence>
+        {open && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-40"
+              onClick={() => setOpen(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: -4 }}
+              transition={{ duration: 0.15 }}
+              className="absolute right-0 top-10 z-50 min-w-[200px] rounded-xl border border-border bg-card shadow-xl p-2"
+            >
+              <div className="px-3 py-2 border-b border-border mb-1">
+                <p className="text-sm font-semibold text-foreground truncate">{user.name}</p>
+                <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+              </div>
+              <button
+                onClick={() => { signOut(); setOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </button>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

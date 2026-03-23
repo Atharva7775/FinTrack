@@ -19,8 +19,23 @@ export function SupabaseSync() {
     (async () => {
       const data = await fetchFromSupabase();
       if (data) {
-        useFinanceStore.getState().hydrate(data);
-        isHydratedRef.current = true;
+        // If Supabase is completely empty, initialize it with the app's default seed data instead of wiping the UI.
+        if (data.transactions.length === 0 && data.goals.length === 0 && !data.splitwiseKey) {
+          const state = useFinanceStore.getState();
+          persistToSupabase({
+            transactions: state.transactions,
+            goals: state.goals,
+            savingsBalance: state.savingsBalance,
+            splitwiseKey: state.splitwiseKey,
+            splitwiseLastSync: state.splitwiseLastSync,
+            splitwiseBalances: state.splitwiseBalances,
+            viewMode: state.viewMode,
+          });
+          isHydratedRef.current = true;
+        } else {
+          useFinanceStore.getState().hydrate(data);
+          isHydratedRef.current = true;
+        }
       }
     })();
 
@@ -33,6 +48,10 @@ export function SupabaseSync() {
           transactions: state.transactions,
           goals: state.goals,
           savingsBalance: state.savingsBalance,
+          splitwiseKey: state.splitwiseKey,
+          splitwiseLastSync: state.splitwiseLastSync,
+          splitwiseBalances: state.splitwiseBalances,
+          viewMode: state.viewMode,
         });
       }, PERSIST_DEBOUNCE_MS);
     });

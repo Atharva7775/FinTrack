@@ -1,0 +1,1 @@
+We need the user to go ahead and register an application to get an API key. 

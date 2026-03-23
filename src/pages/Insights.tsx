@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { motion } from "framer-motion";
 import { useFinanceStore, categoryColors, type Category } from "@/store/financeStore";
 import { CursorTooltip } from "@/components/CursorTooltip";
@@ -39,16 +40,20 @@ const INSIGHTS_FIELD_GUIDE = [
 ];
 
 export default function Insights() {
-  const { transactions, goals } = useFinanceStore();
+  const { transactions: allTx, goals, viewMode } = useFinanceStore();
+  const transactions = useMemo(
+    () => allTx.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise)),
+    [allTx, viewMode]
+  );
 
   const currentMonth = getCurrentMonthKey();
   const prevMonth = getPrevMonthKey();
   const current = transactions.filter((t) => t.date.startsWith(currentMonth));
   const prev = transactions.filter((t) => t.date.startsWith(prevMonth));
 
-  const curIncome = current.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const curExpense = current.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-  const prevExpense = prev.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const curIncome = current.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+  const curExpense = current.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+  const prevExpense = prev.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
 
   const expenseChange = prevExpense > 0 ? ((curExpense - prevExpense) / prevExpense) * 100 : 0;
 
@@ -59,7 +64,7 @@ export default function Insights() {
   // Category spending this month
   const catSpend: Record<string, number> = {};
   current.filter((t) => t.type === "expense").forEach((t) => {
-    catSpend[t.category] = (catSpend[t.category] || 0) + t.amount;
+    catSpend[t.category] = (catSpend[t.category] || 0) + (t.usdAmount ?? t.amount);
   });
   const catData = Object.entries(catSpend)
     .sort((a, b) => b[1] - a[1])
@@ -68,7 +73,7 @@ export default function Insights() {
   // Compare categories month-over-month
   const prevCatSpend: Record<string, number> = {};
   prev.filter((t) => t.type === "expense").forEach((t) => {
-    prevCatSpend[t.category] = (prevCatSpend[t.category] || 0) + t.amount;
+    prevCatSpend[t.category] = (prevCatSpend[t.category] || 0) + (t.usdAmount ?? t.amount);
   });
 
   const insights: { text: string; type: "up" | "down" | "warn" | "good" }[] = [];

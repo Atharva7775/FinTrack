@@ -32,7 +32,11 @@ const item = {
 };
 
 export default function Dashboard() {
-  const transactions = useFinanceStore((s) => s.transactions);
+  const { transactions: allTx, viewMode, splitwiseBalances } = useFinanceStore();
+  const transactions = useMemo(
+    () => allTx.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise)),
+    [allTx, viewMode]
+  );
   const availableMonths = useMemo(
     () => getAvailableMonthKeys(transactions.map((t) => t.date)),
     [transactions]
@@ -51,8 +55,17 @@ export default function Dashboard() {
 
   const last4Months = getLastNMonthsEndingAt(selectedMonthKey, 4);
   const monthTx = transactions.filter((t) => t.date.startsWith(selectedMonthKey));
-  const totalIncome = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const totalExpense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+
+  // In splitwise mode, the top-level balances should be all-time exact balances from the Splitwise API.
+  // In personal mode, they reflect the current month's activity.
+  const totalIncome = viewMode === "splitwise" 
+    ? (splitwiseBalances?.owed ?? 0)
+    : monthTx.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+    
+  const totalExpense = viewMode === "splitwise"
+    ? (splitwiseBalances?.owe ?? 0)
+    : monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+  
   const netSavings = totalIncome - totalExpense;
   const savingsRate = totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0;
 
@@ -60,23 +73,23 @@ export default function Dashboard() {
     const mt = transactions.filter((t) => t.date.startsWith(key));
     return {
       month: label,
-      Income: mt.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0),
-      Expenses: mt.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0),
+      Income: mt.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0),
+      Expenses: mt.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0),
     };
   });
 
   // Pie chart data
   const expenseByCategory: Record<string, number> = {};
   monthTx.filter((t) => t.type === "expense").forEach((t) => {
-    expenseByCategory[t.category] = (expenseByCategory[t.category] || 0) + t.amount;
+    expenseByCategory[t.category] = (expenseByCategory[t.category] || 0) + (t.usdAmount ?? t.amount);
   });
   const pieData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value }));
   const pieColors = ["hsl(12,76%,58%)", "hsl(38,92%,50%)", "hsl(234,62%,56%)", "hsl(292,60%,50%)", "hsl(330,65%,55%)", "hsl(200,60%,50%)", "hsl(0,72%,55%)"];
 
   const lineData = last4Months.map(({ key, label }) => {
     const mt = transactions.filter((t) => t.date.startsWith(key));
-    const inc = mt.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-    const exp = mt.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+    const inc = mt.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+    const exp = mt.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
     return { month: label, Savings: inc - exp };
   });
 
@@ -143,7 +156,9 @@ export default function Dashboard() {
               <div className="p-2 rounded-xl bg-income-muted">
                 <TrendingUp className="h-5 w-5 text-income" />
               </div>
-              <span className="text-sm text-muted-foreground font-medium">Total Income</span>
+              <span className="text-sm text-muted-foreground font-medium">
+                {viewMode === "splitwise" ? "You are owed" : "Total Income"}
+              </span>
             </div>
             <AnimatedCounter value={totalIncome} className="relative z-10 text-2xl font-display font-bold text-foreground" />
           </motion.div>
@@ -155,42 +170,50 @@ export default function Dashboard() {
               <div className="p-2 rounded-xl bg-expense-muted">
                 <TrendingDown className="h-5 w-5 text-expense" />
               </div>
-              <span className="text-sm text-muted-foreground font-medium">Total Expenses</span>
+              <span className="text-sm text-muted-foreground font-medium">
+                {viewMode === "splitwise" ? "You owe" : "Total Expenses"}
+              </span>
             </div>
             <AnimatedCounter value={totalExpense} className="relative z-10 text-2xl font-display font-bold text-foreground" />
           </motion.div>
         </CursorTooltip>
 
-        <CursorTooltip content="Income minus expenses for this month. Positive means you saved; negative means you spent more than you earned.">
-          <motion.div variants={item} className="stat-card-savings rounded-2xl p-5">
-            <div className="relative z-10 flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-xl bg-savings-muted">
-                <PiggyBank className="h-5 w-5 text-savings" />
-              </div>
-              <span className="text-sm text-muted-foreground font-medium">Net Savings</span>
-            </div>
-            <AnimatedCounter value={netSavings} className="relative z-10 text-2xl font-display font-bold text-foreground" />
-          </motion.div>
-        </CursorTooltip>
+        {viewMode !== "splitwise" && (
+          <>
+            <CursorTooltip content="Income minus expenses for this month. Positive means you saved; negative means you spent more than you earned.">
+              <motion.div variants={item} className="stat-card-savings rounded-2xl p-5">
+                <div className="relative z-10 flex items-center gap-3 mb-3">
+                  <div className="p-2 rounded-xl bg-savings-muted">
+                    <PiggyBank className="h-5 w-5 text-savings" />
+                  </div>
+                  <span className="text-sm text-muted-foreground font-medium">Net Savings</span>
+                </div>
+                <AnimatedCounter value={netSavings} className="relative z-10 text-2xl font-display font-bold text-foreground" />
+              </motion.div>
+            </CursorTooltip>
 
-        <CursorTooltip content="Percentage of your income that you saved this month. (Net savings ÷ Total income × 100).">
-          <motion.div variants={item} className="stat-card-warning rounded-2xl p-5">
-            <div className="relative z-10 flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-xl bg-accent">
-                <DollarSign className="h-5 w-5 text-warning" />
-              </div>
-              <span className="text-sm text-muted-foreground font-medium">Savings Rate</span>
-            </div>
-            <AnimatedCounter value={savingsRate} suffix="%" decimals={1} prefix="" className="relative z-10 text-2xl font-display font-bold text-foreground" />
-          </motion.div>
-        </CursorTooltip>
+            <CursorTooltip content="Percentage of your income that you saved this month. (Net savings ÷ Total income × 100).">
+              <motion.div variants={item} className="stat-card-warning rounded-2xl p-5">
+                <div className="relative z-10 flex items-center gap-3 mb-3">
+                  <div className="p-2 rounded-xl bg-accent">
+                    <DollarSign className="h-5 w-5 text-warning" />
+                  </div>
+                  <span className="text-sm text-muted-foreground font-medium">Savings Rate</span>
+                </div>
+                <AnimatedCounter value={savingsRate} suffix="%" decimals={1} prefix="" className="relative z-10 text-2xl font-display font-bold text-foreground" />
+              </motion.div>
+            </CursorTooltip>
+          </>
+        )}
       </div>
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <CursorTooltip content="Bar chart comparing your total income and total expenses for each of the last four months.">
           <motion.div variants={item} className="glass-card rounded-2xl p-6">
-            <h3 className="font-display font-semibold text-foreground mb-4">Income vs Expenses</h3>
+            <h3 className="font-display font-semibold text-foreground mb-4">
+              {viewMode === "splitwise" ? "Owed vs Owe" : "Income vs Expenses"}
+            </h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={barData} barGap={4}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(210,18%,90%)" vertical={false} />
@@ -200,8 +223,8 @@ export default function Dashboard() {
                 contentStyle={{ borderRadius: 12, border: "1px solid hsl(210,18%,90%)", boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }}
                 formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]}
               />
-              <Bar dataKey="Income" fill="hsl(172,66%,38%)" radius={[6, 6, 0, 0]} />
-              <Bar dataKey="Expenses" fill="hsl(12,76%,58%)" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="Income" name={viewMode === "splitwise" ? "You are Owed" : "Income"} fill="hsl(172,66%,38%)" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="Expenses" name={viewMode === "splitwise" ? "You Owe" : "Expenses"} fill="hsl(12,76%,58%)" radius={[6, 6, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
           </motion.div>
@@ -209,7 +232,9 @@ export default function Dashboard() {
 
         <CursorTooltip content="Pie chart showing how this month’s expenses are split by category (e.g. rent, food, travel).">
           <motion.div variants={item} className="glass-card rounded-2xl p-6">
-            <h3 className="font-display font-semibold text-foreground mb-4">Expense Breakdown</h3>
+            <h3 className="font-display font-semibold text-foreground mb-4">
+              {viewMode === "splitwise" ? "Owe Breakdown" : "Expense Breakdown"}
+            </h3>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={3} dataKey="value">
@@ -224,20 +249,22 @@ export default function Dashboard() {
           </motion.div>
         </CursorTooltip>
 
-        <CursorTooltip content="Line chart showing your net savings (income minus expenses) for each of the last four months.">
-          <motion.div variants={item} className="glass-card rounded-2xl p-6 lg:col-span-2">
-            <h3 className="font-display font-semibold text-foreground mb-4">Savings Trend</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={lineData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(210,18%,90%)" vertical={false} />
-              <XAxis dataKey="month" tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid hsl(210,18%,90%)" }} formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]} />
-              <Line type="monotone" dataKey="Savings" stroke="hsl(234,62%,56%)" strokeWidth={3} dot={{ fill: "hsl(234,62%,56%)", r: 5 }} />
-            </LineChart>
-          </ResponsiveContainer>
-          </motion.div>
-        </CursorTooltip>
+        {viewMode !== "splitwise" && (
+          <CursorTooltip content="Line chart showing your net savings (income minus expenses) for each of the last four months.">
+            <motion.div variants={item} className="glass-card rounded-2xl p-6 lg:col-span-2">
+              <h3 className="font-display font-semibold text-foreground mb-4">Savings Trend</h3>
+              <ResponsiveContainer width="100%" height={250}>
+                <LineChart data={lineData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(210,18%,90%)" vertical={false} />
+                  <XAxis dataKey="month" tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid hsl(210,18%,90%)" }} formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]} />
+                  <Line type="monotone" dataKey="Savings" stroke="hsl(234,62%,56%)" strokeWidth={3} dot={{ fill: "hsl(234,62%,56%)", r: 5 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </motion.div>
+          </CursorTooltip>
+        )}
       </div>
     </motion.div>
   );

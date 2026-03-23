@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { SEED_TRANSACTIONS } from '@/lib/seedData';
 
 export type TransactionType = 'income' | 'expense';
 
@@ -35,6 +36,12 @@ export interface Transaction {
   category: Category;
   date: string;
   note: string;
+  isSplitwise?: boolean;
+  splitwiseId?: number;
+  originalCurrency?: string;
+  originalAmount?: number;
+  usdAmount?: number;
+  isPending?: boolean;
 }
 
 export interface GoalContribution {
@@ -56,12 +63,24 @@ export interface HydratePayload {
   transactions: Transaction[];
   goals: Goal[];
   savingsBalance: number;
+  splitwiseKey: string | null;
+  splitwiseLastSync: string | null;
+  splitwiseBalances: { owe: number; owed: number } | null;
+  viewMode: "personal" | "splitwise";
 }
 
 interface FinanceStore {
   transactions: Transaction[];
   goals: Goal[];
   savingsBalance: number;
+  splitwiseKey: string | null;
+  splitwiseLastSync: string | null;
+  splitwiseBalances: { owe: number; owed: number } | null;
+  viewMode: "personal" | "splitwise";
+  setViewMode: (mode: "personal" | "splitwise") => void;
+  setSplitwiseKey: (key: string | null) => void;
+  setSplitwiseLastSync: (dateStr: string) => void;
+  setSplitwiseBalances: (balances: { owe: number; owed: number } | null) => void;
   addTransaction: (t: Omit<Transaction, 'id'>) => void;
   deleteTransaction: (id: string) => void;
   updateTransaction: (id: string, t: Partial<Transaction>) => void;
@@ -74,12 +93,20 @@ interface FinanceStore {
   hydrate: (payload: HydratePayload) => void;
 }
 
-let nextId = 1;
+let nextId = SEED_TRANSACTIONS.length + 1;
 
 export const useFinanceStore = create<FinanceStore>((set) => ({
-  transactions: [],
+  transactions: SEED_TRANSACTIONS,
   goals: [],
   savingsBalance: 0,
+  splitwiseKey: null,
+  splitwiseLastSync: null,
+  splitwiseBalances: null,
+  viewMode: "personal",
+  setViewMode: (mode) => set({ viewMode: mode }),
+  setSplitwiseKey: (key) => set({ splitwiseKey: key }),
+  setSplitwiseLastSync: (dateStr) => set({ splitwiseLastSync: dateStr }),
+  setSplitwiseBalances: (balances) => set({ splitwiseBalances: balances }),
   addTransaction: (t) => set((s) => ({
     transactions: [{ ...t, id: String(nextId++) }, ...s.transactions],
   })),
@@ -123,6 +150,14 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
     payload.transactions.forEach((t) => { const n = parseInt(t.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
     payload.goals.forEach((g) => { const n = parseInt(g.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
     nextId = maxId + 1;
-    set({ transactions: payload.transactions, goals: payload.goals, savingsBalance: payload.savingsBalance });
+    set({ 
+      transactions: payload.transactions, 
+      goals: payload.goals, 
+      savingsBalance: payload.savingsBalance,
+      splitwiseKey: payload.splitwiseKey,
+      splitwiseLastSync: payload.splitwiseLastSync,
+      splitwiseBalances: payload.splitwiseBalances,
+      viewMode: payload.viewMode,
+    });
   },
 }));

@@ -1,60 +1,52 @@
--- FinTrack database schema for Supabase (PostgreSQL)
--- Run this in the Supabase SQL Editor (Dashboard → SQL Editor) to create tables.
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
 
--- Transactions: every income/expense entry
-CREATE TABLE IF NOT EXISTS transactions (
-  id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
-  amount NUMERIC NOT NULL CHECK (amount >= 0),
-  category TEXT NOT NULL,
-  date DATE NOT NULL,
-  note TEXT NOT NULL DEFAULT '',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE public.ai_chat_messages (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid,
+  role text NOT NULL CHECK (role = ANY (ARRAY['user'::text, 'assistant'::text])),
+  content text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT ai_chat_messages_pkey PRIMARY KEY (id)
 );
-
--- Goals: savings targets
-CREATE TABLE IF NOT EXISTS goals (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  target_amount NUMERIC NOT NULL CHECK (target_amount > 0),
-  current_amount NUMERIC NOT NULL CHECK (current_amount >= 0) DEFAULT 0,
-  deadline DATE NOT NULL,
-  monthly_contribution NUMERIC NOT NULL CHECK (monthly_contribution >= 0) DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE public.app_settings (
+  key text NOT NULL,
+  value jsonb NOT NULL,
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT app_settings_pkey PRIMARY KEY (key)
 );
-
--- Goal contributions: each time user records "set aside X for this goal"
-CREATE TABLE IF NOT EXISTS goal_contributions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
-  amount NUMERIC NOT NULL CHECK (amount > 0),
-  date DATE NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE public.goal_contributions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  goal_id text NOT NULL,
+  amount numeric NOT NULL CHECK (amount > 0::numeric),
+  date date NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT goal_contributions_pkey PRIMARY KEY (id),
+  CONSTRAINT goal_contributions_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES public.goals(id)
 );
-
--- App settings: key-value (e.g. savings_balance)
-CREATE TABLE IF NOT EXISTS app_settings (
-  key TEXT PRIMARY KEY,
-  value JSONB NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE public.goals (
+  id text NOT NULL,
+  title text NOT NULL,
+  target_amount numeric NOT NULL CHECK (target_amount > 0::numeric),
+  current_amount numeric NOT NULL DEFAULT 0 CHECK (current_amount >= 0::numeric),
+  deadline date NOT NULL,
+  monthly_contribution numeric NOT NULL DEFAULT 0 CHECK (monthly_contribution >= 0::numeric),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT goals_pkey PRIMARY KEY (id)
 );
-
--- AI chatbot conversation history
-CREATE TABLE IF NOT EXISTS ai_chat_messages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID,
-  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-  content TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE public.transactions (
+  id text NOT NULL,
+  type text NOT NULL CHECK (type = ANY (ARRAY['income'::text, 'expense'::text])),
+  amount numeric NOT NULL CHECK (amount >= 0::numeric),
+  category text NOT NULL,
+  date date NOT NULL,
+  note text NOT NULL DEFAULT ''::text,
+  is_splitwise boolean DEFAULT FALSE,
+  splitwise_id bigint,
+  original_currency text,
+  original_amount numeric,
+  usd_amount numeric,
+  is_pending boolean DEFAULT false,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT transactions_pkey PRIMARY KEY (id)
 );
-
--- Optional: index for common queries
-CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
-CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type);
-CREATE INDEX IF NOT EXISTS idx_goal_contributions_goal_id ON goal_contributions(goal_id);
-CREATE INDEX IF NOT EXISTS idx_goal_contributions_date ON goal_contributions(date);
-CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_user_created_at ON ai_chat_messages(user_id, created_at);
-
--- Optional: enable Row Level Security (RLS) when you add auth; for single-user you can leave RLS off or add a policy.
--- ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
--- CREATE POLICY "Allow all for anon" ON transactions FOR ALL USING (true);

@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { FlaskConical, MessageSquare, Send, Loader2, History, Sparkles } from "lucide-react";
-import { useFinanceStore, type Transaction, type Goal } from "@/store/financeStore";
+import { useFinanceStore } from "@/store/financeStore";
+import { useAuth } from "@/hooks/useAuth";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { buildFinancialSnapshotForAI } from "@/lib/financialSnapshotForAI";
+import { chatWithGemini, chatWithOllama, getAiProvider } from "@/lib/aiChatClient";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -20,37 +23,41 @@ interface ChatMessage {
 const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.05 } } };
 const item = { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } };
 
-function buildFinancialContext(params: { transactions: Transaction[]; goals: Goal[]; savingsBalance: number }) {
-  const { transactions, goals, savingsBalance } = params;
-  const sortedTx = [...transactions].sort((a, b) => a.date.localeCompare(b.date));
-  const recentTransactions = sortedTx.slice(-200);
+const GREETING_DAY_KEY = "fintrack_scenario_lab_greeting_day";
 
-  const totalIncome = transactions
-    .filter((t) => t.type === "income")
-    .reduce((sum, t) => sum + t.amount, 0);
-  const totalExpenses = transactions
-    .filter((t) => t.type === "expense")
-    .reduce((sum, t) => sum + t.amount, 0);
+function localCalendarDayKey(d = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
-  return {
-    savingsBalance,
-    totalIncome,
-    totalExpenses,
-    netSavings: totalIncome - totalExpenses,
-    goals: goals.map((g) => ({
-      id: g.id,
-      title: g.title,
-      targetAmount: g.targetAmount,
-      currentAmount: g.currentAmount,
-      deadline: g.deadline,
-      monthlyContribution: g.monthlyContribution,
-    })),
-    recentTransactions,
-  };
+function timeOfDayPhrase(): "Good morning" | "Good afternoon" | "Good evening" {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+function buildDailyGreeting(displayName?: string | null): string {
+  const phrase = timeOfDayPhrase();
+  const name = displayName?.trim().split(/\s+/)[0];
+  const hi = name ? `${phrase}, ${name}` : phrase;
+  return (
+    `${hi}! I'm FinTrack AI — here to help with spending, savings goals, and “what if” questions using your FinTrack data. ` +
+    `What would you like to explore today?`
+  );
 }
 
 export default function ScenarioLab() {
-  const { transactions, goals, savingsBalance } = useFinanceStore();
+  const {
+    transactions,
+    goals,
+    savingsBalance,
+    viewMode,
+    splitwiseBalances,
+  } = useFinanceStore();
+  const { user, isLoading: authLoading } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -58,39 +65,66 @@ export default function ScenarioLab() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const supabaseConfigured = isSupabaseConfigured();
 
+  const snapshot = buildFinancialSnapshotForAI({
+    transactions,
+    goals,
+    savingsBalance,
+    viewMode,
+    splitwiseBalances,
+  });
+
   useEffect(() => {
+    if (authLoading) return;
+
     let cancelled = false;
+    const todayKey = localCalendarDayKey();
+    const shouldGreetToday = localStorage.getItem(GREETING_DAY_KEY) !== todayKey;
+
     const loadHistory = async () => {
       const supabase = getSupabase();
-      if (!supabase) return;
+      let history: ChatMessage[] = [];
 
-      const { data, error: dbError } = await supabase
-        .from("ai_chat_messages")
-        .select("id, role, content, created_at")
-        .order("created_at", { ascending: true })
-        .limit(200);
+      if (supabase) {
+        const { data, error: dbError } = await supabase
+          .from("ai_chat_messages")
+          .select("id, role, content, created_at")
+          .order("created_at", { ascending: true })
+          .limit(200);
 
-      if (dbError || !data || cancelled) return;
+        if (!dbError && data && !cancelled) {
+          history = data.map((row: { id?: string; role: string; content: string; created_at?: string }) => ({
+            id: row.id ?? crypto.randomUUID(),
+            role: row.role === "assistant" ? "assistant" : "user",
+            content: row.content,
+            createdAt: row.created_at,
+          }));
+        }
+      }
 
-      const history: ChatMessage[] = data.map((row: any) => ({
-        id: row.id ?? crypto.randomUUID(),
-        role: row.role === "assistant" ? "assistant" : "user",
-        content: row.content,
-        createdAt: row.created_at,
-      }));
+      if (cancelled) return;
 
-      setMessages(history);
+      if (shouldGreetToday) {
+        localStorage.setItem(GREETING_DAY_KEY, todayKey);
+        const greet: ChatMessage = {
+          id: `scenario-daily-greet-${todayKey}`,
+          role: "assistant",
+          content: buildDailyGreeting(user?.name),
+        };
+        setMessages([greet, ...history]);
+      } else {
+        setMessages(history);
+      }
     };
 
-    loadHistory();
+    void loadHistory();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authLoading]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+  }, [messages.length, isLoading]);
 
   const handleSend = async () => {
     const trimmed = input.trim();
@@ -103,6 +137,12 @@ export default function ScenarioLab() {
       role: "user",
       content: trimmed,
     };
+
+    const priorMessages = messages;
+    const historyForModel = priorMessages.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
 
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
@@ -117,68 +157,34 @@ export default function ScenarioLab() {
     }
 
     try {
-      const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-      if (!geminiKey) {
-        setError("Set VITE_GEMINI_API_KEY in your .env file to enable the AI assistant.");
-        return;
+      const provider = getAiProvider();
+      let content: string;
+
+      if (provider === "gemini") {
+        const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+        if (!geminiKey) {
+          setError("Set VITE_GEMINI_API_KEY in your .env file, or use VITE_AI_PROVIDER=ollama with Ollama running.");
+          return;
+        }
+        const historyText =
+          priorMessages.length === 0
+            ? "No prior conversation."
+            : priorMessages
+                .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+                .join("\n\n");
+        content = await chatWithGemini({
+          snapshot,
+          historyText,
+          latestUserQuestion: trimmed,
+          apiKey: geminiKey,
+        });
+      } else {
+        content = await chatWithOllama({
+          snapshot,
+          history: historyForModel,
+          latestUserQuestion: trimmed,
+        });
       }
-
-      const financialContext = buildFinancialContext({ transactions, goals, savingsBalance });
-
-      const historyText =
-        messages.length === 0
-          ? "No prior conversation."
-          : messages
-              .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-              .join("\n\n");
-
-      const prompt = [
-        "You are FinTrack AI, a financial planning assistant inside a personal finance app.",
-        "Use the provided JSON financial data (transactions, goals, savings balance, totals) to answer questions.",
-        "Explain your reasoning in clear steps, reference specific numbers, and always focus on how a decision impacts the user's monthly budget and long-term goals.",
-        "If the user asks about changing contributions, travel plans, or investing, quantify the impact on monthly cash flow and goal timelines.",
-        "",
-        `User's financial data (JSON): ${JSON.stringify(financialContext)}`,
-        "",
-        "Conversation so far:",
-        historyText,
-        "",
-        `User: ${trimmed}`,
-      ].join("\n");
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(
-          geminiKey,
-        )}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-                parts: [{ text: prompt }],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.3,
-            },
-          }),
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error("AI request failed");
-      }
-
-      const json = await response.json();
-      const contentParts: string[] =
-        json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "") ?? [];
-      const content: string =
-        contentParts.join("").trim() ||
-        "I couldn't generate a detailed answer. Please try rephrasing your question.";
 
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -196,7 +202,9 @@ export default function ScenarioLab() {
       }
     } catch (e) {
       console.error("FinTrack: AI chat failed", e);
-      setError("Something went wrong while talking to the AI. Please try again in a moment.");
+      setError(
+        e instanceof Error ? e.message : "Something went wrong while talking to the AI. Please try again in a moment."
+      );
     } finally {
       setIsLoading(false);
     }
@@ -205,6 +213,13 @@ export default function ScenarioLab() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     void handleSend();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void handleSend();
+    }
   };
 
   const exampleQuestions = [
@@ -228,7 +243,7 @@ export default function ScenarioLab() {
 
       <motion.div
         variants={item}
-        className="glass-card rounded-2xl p-6 flex flex-col h-[calc(100vh-12rem)] max-h-[640px]"
+        className="glass-card rounded-2xl p-5 sm:p-6 flex flex-col h-[min(72vh,680px)] min-h-[420px]"
       >
         <div className="flex items-center justify-between gap-2 mb-4">
           <div className="flex items-center gap-2">
@@ -262,30 +277,41 @@ export default function ScenarioLab() {
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto pr-1">
-          <div className="mx-auto max-w-2xl space-y-4">
-            {messages.length === 0 && (
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground text-center px-4">
-                Ask a question like “Can I plan travel to Australia that will cost me $1000?” and I’ll break down how it fits into your
-                current spending, savings, and goals.
-              </div>
-            )}
-            {messages.map((m) => (
-              <div key={m.id} className="flex">
-                <div className="w-full">
+        <div className="flex-1 min-h-0 flex flex-col rounded-xl border border-border/60 bg-background/40">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+            <div className="flex min-h-full flex-col justify-end gap-3 px-2 py-3 sm:px-3">
+              {messages.length === 0 && !isLoading && (
+                <p className="text-center text-xs text-muted-foreground px-3 py-8 max-w-md mx-auto leading-relaxed">
+                  Ask a question like “Can I plan travel to Australia that will cost me $1000?” and I’ll break down how it fits into your
+                  current spending, savings, and goals.
+                </p>
+              )}
+              {messages.map((m) => (
+                <div
+                  key={m.id}
+                  className={`flex w-full ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                >
                   <div
-                    className={`inline-block rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${
+                    className={`max-w-[min(100%,32rem)] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${
                       m.role === "user"
-                        ? "bg-primary text-primary-foreground ml-auto"
-                        : "bg-muted text-foreground mr-auto"
+                        ? "bg-primary text-primary-foreground rounded-br-md"
+                        : "bg-muted text-foreground border border-border/50 rounded-bl-md"
                     }`}
                   >
                     {m.content}
                   </div>
                 </div>
-              </div>
-            ))}
-            <div ref={bottomRef} />
+              ))}
+              {isLoading && (
+                <div className="flex w-full justify-start">
+                  <div className="rounded-2xl rounded-bl-md border border-border/50 bg-muted px-4 py-3 text-sm text-muted-foreground flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                    Thinking…
+                  </div>
+                </div>
+              )}
+              <div ref={bottomRef} className="h-px shrink-0" aria-hidden />
+            </div>
           </div>
         </div>
 
@@ -293,27 +319,32 @@ export default function ScenarioLab() {
 
         <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-border">
           <div className="space-y-2">
-            <div className="rounded-2xl border border-border bg-background flex items-end overflow-hidden">
+            <div className="flex w-full min-w-0 items-stretch rounded-2xl border border-border bg-background overflow-hidden">
               <Button
                 type="submit"
                 disabled={isLoading || !input.trim()}
-                className="gap-2 rounded-none border-r border-border h-[56px] px-4"
+                className="gap-2 shrink-0 rounded-none border-r border-border h-auto min-h-[56px] px-4 self-stretch"
               >
-                {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                <Send className="h-4 w-4" />
                 Ask
               </Button>
-              <CursorTooltip content="Ask detailed questions about travel, investments, or changing your contributions.">
+              <CursorTooltip
+                asChild
+                content="Press Enter to send, Shift+Enter for a new line."
+              >
                 <Textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
                   placeholder='For example: "If I put $2000 instead of $3000 into my goals each month, what changes?"'
-                  className="flex-1 border-0 rounded-none shadow-none resize-none text-sm focus-visible:ring-0 focus-visible:ring-offset-0 min-h-[56px]"
-                  rows={2}
+                  className="min-w-0 flex-1 w-full rounded-none border-0 shadow-none resize-y min-h-[72px] py-3 text-sm leading-relaxed focus-visible:ring-0 focus-visible:ring-offset-0"
+                  rows={3}
                 />
               </CursorTooltip>
             </div>
-            <span className="text-[11px] text-muted-foreground">
-              The assistant uses your actual transactions, goals, and savings to answer.
+            <span className="text-[11px] text-muted-foreground leading-snug block">
+              Uses a compact snapshot of your dashboard data per request. Local Ollama can be slow on CPU — try a smaller model (
+              <code className="text-[10px]">ollama pull llama3.2:1b</code>) or <code className="text-[10px]">VITE_AI_PROVIDER=gemini</code>.
             </span>
           </div>
         </form>

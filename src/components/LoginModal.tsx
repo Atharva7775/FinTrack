@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 export function LoginModal() {
-  const { user, signIn, isLoading } = useAuth();
+  const { user, signIn, isLoading, gsiReady } = useAuth();
   const [dismissed, setDismissed] = useState(false);
+  const hasGoogleClientId = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
+  const googleSignInLoading = hasGoogleClientId && !gsiReady;
 
   // Show modal only when not yet signed in and not dismissed
   const showModal = !isLoading && !user && !dismissed;
@@ -80,9 +82,10 @@ export function LoginModal() {
                 <Button
                   className="w-full h-12 gap-3 text-base font-semibold rounded-xl"
                   onClick={signIn}
+                  disabled={googleSignInLoading}
                 >
                   <Mail className="h-5 w-5" />
-                  Sign in with Google
+                  {googleSignInLoading ? "Loading Google…" : "Sign in with Google"}
                 </Button>
                 <button
                   onClick={() => setDismissed(true)}

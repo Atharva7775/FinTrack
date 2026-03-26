@@ -158,18 +158,30 @@ function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () 
 
 /** User avatar / sign-in button shown in the top header bar. */
 function UserMenu() {
-  const { user, signIn, signOut } = useAuth();
+  const { user, signIn, signOut, gsiReady } = useAuth();
   const [open, setOpen] = useState(false);
+  const hasGoogleClientId = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
+  const googleSignInLoading = hasGoogleClientId && !gsiReady;
 
   if (!user) {
     return (
-      <CursorTooltip content="Sign in with Google to personalise your dashboard and email statements.">
+      <CursorTooltip
+        content={
+          googleSignInLoading
+            ? "Loading Google sign-in…"
+            : "Sign in with Google to personalise your dashboard and email statements."
+        }
+      >
         <button
+          type="button"
           onClick={signIn}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-border hover:bg-muted transition-colors text-sm font-medium text-muted-foreground hover:text-foreground"
+          disabled={googleSignInLoading}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-border hover:bg-muted transition-colors text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:pointer-events-none"
         >
           <LogIn className="h-4 w-4" />
-          <span className="hidden sm:inline">Sign in</span>
+          <span className="hidden sm:inline">
+            {googleSignInLoading ? "Loading…" : "Sign in"}
+          </span>
         </button>
       </CursorTooltip>
     );

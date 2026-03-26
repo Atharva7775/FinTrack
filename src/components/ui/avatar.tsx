@@ -15,11 +15,23 @@ const Avatar = React.forwardRef<
 ));
 Avatar.displayName = AvatarPrimitive.Root.displayName;
 
+
+const DEFAULT_AVATAR_URL = "https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/user.svg";
+
 const AvatarImage = React.forwardRef<
   React.ElementRef<typeof AvatarPrimitive.Image>,
   React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Image>
->(({ className, ...props }, ref) => (
-  <AvatarPrimitive.Image ref={ref} className={cn("aspect-square h-full w-full", className)} {...props} />
+>(({ className, src, ...props }, ref) => (
+  <AvatarPrimitive.Image
+    ref={ref}
+    className={cn("aspect-square h-full w-full", className)}
+    src={src || DEFAULT_AVATAR_URL}
+    onError={(e) => {
+      const target = e.target as HTMLImageElement;
+      if (target.src !== DEFAULT_AVATAR_URL) target.src = DEFAULT_AVATAR_URL;
+    }}
+    {...props}
+  />
 ));
 AvatarImage.displayName = AvatarPrimitive.Image.displayName;
 

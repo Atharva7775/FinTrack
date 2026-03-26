@@ -186,10 +186,61 @@ export default function ScenarioLab() {
         });
       }
 
+      // Try to extract a JSON block with goals from the assistant's response
+      let addedGoals = 0;
+      try {
+        // Look for a JSON block in the response
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed && Array.isArray(parsed.goals)) {
+            const { goals: aiGoals } = parsed;
+            // Get current goal titles for deduplication
+            const currentGoalTitles = new Set(goals.map((g) => g.title));
+            aiGoals.forEach((g: any) => {
+              if (typeof g.title === 'string' && !currentGoalTitles.has(g.title)) {
+                // Try to recalculate targetAmount from listed expenses in the response
+                let recalculatedTarget = 0;
+                // Look for a section in the content that lists expenses for this goal
+                const expenseSectionRegex = new RegExp(`(?:${g.title}|trip|goal)[^\n]*:?((?:\n\* [^\n]+\$[0-9,.]+)+)`, 'i');
+                const match = content.match(expenseSectionRegex);
+                if (match && match[1]) {
+                  // Sum all $ amounts in the matched section
+                  const amounts = Array.from(match[1].matchAll(/\$([0-9,.]+)/g)).map((m) => Number(m[1].replace(/,/g, '')));
+                  if (amounts.length > 0) recalculatedTarget = amounts.reduce((a, b) => a + b, 0);
+                }
+                const newGoal = {
+                  title: g.title,
+                  targetAmount: recalculatedTarget > 0 ? recalculatedTarget : Number(g.targetAmount) || 0,
+                  currentAmount: Number(g.currentAmount) || 0,
+                  deadline: g.deadline || '',
+                  monthlyContribution: Number(g.monthlyContribution) || 0,
+                };
+                useFinanceStore.getState().addGoal(newGoal);
+                addedGoals++;
+              }
+            });
+          }
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+
+
+      // Remove JSON blocks from the assistant's response for display
+      function stripJsonBlocks(text: string): string {
+        // Remove any JSON blocks (greedy match between curly braces)
+        return text.replace(/\{[\s\S]*\}/g, '').replace(/\n{2,}/g, '\n').trim();
+      }
+
+      const displayContent = stripJsonBlocks(content);
+
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content,
+        content: addedGoals > 0
+          ? displayContent + `\n\n✅ ${addedGoals} new goal${addedGoals > 1 ? 's' : ''} added to your Goals!`
+          : displayContent,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);

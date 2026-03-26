@@ -78,6 +78,10 @@ interface FinanceStore {
   splitwiseBalances: { owe: number; owed: number } | null;
   viewMode: "personal" | "splitwise";
   setViewMode: (mode: "personal" | "splitwise") => void;
+  /** Add a new goal to the store */
+  addGoal: (g: Omit<Goal, 'id'>) => void;
+  /** Edit a transaction by id */
+  editTransaction: (id: string, updates: Partial<Transaction>) => void;
   setSplitwiseKey: (key: string | null) => void;
   setSplitwiseLastSync: (dateStr: string) => void;
   setSplitwiseBalances: (balances: { owe: number; owed: number } | null) => void;
@@ -116,8 +120,13 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
   updateTransaction: (id, updates) => set((s) => ({
     transactions: s.transactions.map((t) => t.id === id ? { ...t, ...updates } : t),
   })),
+  /** Add a new goal to the store */
   addGoal: (g) => set((s) => ({
     goals: [...s.goals, { ...g, id: String(nextId++), contributions: [] }],
+  })),
+  /** Edit a transaction by id */
+  editTransaction: (id, updates) => set((s) => ({
+    transactions: s.transactions.map((t) => t.id === id ? { ...t, ...updates } : t),
   })),
   updateGoal: (id, updates) => set((s) => ({
     goals: s.goals.map((g) => g.id === id ? { ...g, ...updates } : g),

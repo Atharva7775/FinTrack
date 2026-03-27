@@ -18,10 +18,6 @@ export default defineConfig(({ mode }) => ({
         rewrite: (path) => path.replace(/^\/api\/splitwise/, '/api/v3.0'),
         secure: false,
       },
-      '/api/llm': {
-        target: 'http://127.0.0.1:3001',
-        changeOrigin: true,
-      },
     }
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),

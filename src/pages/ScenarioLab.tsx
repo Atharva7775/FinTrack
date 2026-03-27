@@ -11,15 +11,20 @@ import {
   ChevronLeft,
   ChevronRight,
   LogIn,
+  Paperclip,
+  FileText,
+  X,
+  Download,
 } from "lucide-react";
 import { useFinanceStore } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import { buildFinancialSnapshotForAI } from "@/lib/financialSnapshotForAI";
-import { chatWithGemini, chatWithOllama, getAiProvider } from "@/lib/aiChatClient";
+import { buildFinancialContext, buildSystemPrompt } from "@/lib/aiContextBuilder";
+import { chatWithGemini, getAiProvider } from "@/lib/aiChatClient";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CursorTooltip } from "@/components/CursorTooltip";
+import { generateFinancePDF } from "@/lib/pdfGenerator";
 import {
   fetchChatSessions,
   createChatSession,
@@ -29,6 +34,8 @@ import {
   renameChatSession,
   type StoredChatSession,
 } from "@/lib/chatSync";
+
+const SESSION_STORAGE_KEY = "fintrack_active_chat_session_id";
 
 type ChatRole = "user" | "assistant";
 
@@ -44,8 +51,8 @@ const item = { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } };
 
 function timeOfDayPhrase(): "Good morning" | "Good afternoon" | "Good evening" {
   const h = new Date().getHours();
-  if (h < 12) return "Good morning";
-  if (h < 17) return "Good afternoon";
+  if (h >= 5 && h < 12) return "Good morning";
+  if (h >= 12 && h < 18) return "Good afternoon";
   return "Good evening";
 }
 
@@ -108,7 +115,12 @@ function greetingMessage(displayName?: string | null): ChatMessage {
 }
 
 function stripJsonBlocks(text: string): string {
-  return text.replace(/\{[\s\S]*\}/g, "").replace(/\n{2,}/g, "\n").trim();
+  return text
+    .replace(/\{[\s\S]*\}/g, "")
+    .replace(/```json[\s\S]*```/g, "")
+    .replace(/(?:here is the json|the following json|i've added the goal|json block)[^.!?:\n]*[:\n\s]*/gi, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
 }
 
 export default function ScenarioLab() {
@@ -124,10 +136,14 @@ export default function ScenarioLab() {
   const [error, setError] = useState<string | null>(null);
   const [loadingMessages, setLoadingMessages] = useState(false);
 
+  const [attachment, setAttachment] = useState<{ name: string; type: string; data: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const supabaseConfigured = isSupabaseConfigured();
 
-  const snapshot = buildFinancialSnapshotForAI({ transactions, goals, savingsBalance, viewMode, splitwiseBalances });
+  const context = buildFinancialContext();
+  const systemPromptOverride = buildSystemPrompt(context);
 
   const startNewSession = useCallback(
     async (userName?: string | null): Promise<string> => {
@@ -144,6 +160,7 @@ export default function ScenarioLab() {
           return id;
         }
       }
+      // Fallback for no Supabase or session creation failure
       const fallbackId = `local-${Date.now()}`;
       const newSession: StoredChatSession = { id: fallbackId, name: "New Chat", createdAt: new Date().toISOString() };
       setSessions((prev) => [newSession, ...prev]);
@@ -158,6 +175,7 @@ export default function ScenarioLab() {
   useEffect(() => {
     if (authLoading) return;
     let cancelled = false;
+
     const init = async () => {
       let stored: StoredChatSession[] = [];
       if (supabaseConfigured && user?.email) {
@@ -166,15 +184,21 @@ export default function ScenarioLab() {
       } else {
         setSessions([]);
       }
+
       if (cancelled) return;
 
-      // sessionStorage persists across refreshes but is cleared when the tab/browser is closed.
-      // Use it to resume the last active session on refresh instead of always starting a new one.
+      // Resume from sessionStorage if available in our list
       const savedId = sessionStorage.getItem(SESSION_STORAGE_KEY);
-      const resumeSession = stored.find((s) => s.id === savedId);
+      let resumeSession = stored.find((s) => s.id === savedId);
+
+      // If no session found in sessionStorage but we have historical ones, pick the latest one
+      if (!resumeSession && stored.length > 0) {
+        resumeSession = stored[0];
+      }
 
       if (resumeSession) {
         setActiveSessionId(resumeSession.id);
+        sessionStorage.setItem(SESSION_STORAGE_KEY, resumeSession.id);
         if (supabaseConfigured) {
           setLoadingMessages(true);
           const msgs = await fetchSessionMessages(resumeSession.id);
@@ -182,15 +206,22 @@ export default function ScenarioLab() {
             setLoadingMessages(false);
             setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt })));
           }
+        } else {
+          // Local fallback (no Supabase): at least show greeting if we were in a session
+          setMessages([greetingMessage(user?.name)]);
         }
       } else {
+        // No session to resume and no previous sessions, start a fresh one
         await startNewSession(user?.name);
       }
     };
+
     void init();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      cancelled = true;
+    };
   }, [user?.email, authLoading]);
+
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -206,6 +237,9 @@ export default function ScenarioLab() {
       const msgs = await fetchSessionMessages(sessionId);
       setLoadingMessages(false);
       setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt })));
+    } else {
+      // Local fallback
+      setMessages([greetingMessage(user?.name)]);
     }
   };
 
@@ -220,12 +254,19 @@ export default function ScenarioLab() {
     const trimmed = input.trim();
     if (!trimmed || isLoading || !activeSessionId) return;
     setError(null);
-    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: trimmed };
+    const userMessage: ChatMessage = { 
+      id: crypto.randomUUID(), 
+      role: "user", 
+      content: attachment ? `${trimmed} (Attached: ${attachment.name})` : trimmed 
+    };
     const priorMessages = messages;
     const historyForModel = priorMessages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
+    const currentAttachment = attachment;
+    setAttachment(null);
     setIsLoading(true);
+
     if (supabaseConfigured && user?.email) {
       await saveMessage(activeSessionId, user.email, "user", userMessage.content);
     }
@@ -236,63 +277,123 @@ export default function ScenarioLab() {
       if (supabaseConfigured) void renameChatSession(activeSessionId, sessionName);
     }
     try {
-      const provider = getAiProvider();
-      let content: string;
-      if (provider === "gemini") {
-        const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-        if (!geminiKey) {
-          setError("Set VITE_GEMINI_API_KEY in your .env file, or use VITE_AI_PROVIDER=ollama.");
-          setIsLoading(false);
-          return;
-        }
-        const historyText = priorMessages.length === 0
-          ? "No prior conversation."
-          : priorMessages.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
-        content = await chatWithGemini({ snapshot, historyText, latestUserQuestion: trimmed, apiKey: geminiKey });
-      } else {
-        content = await chatWithOllama({ snapshot, history: historyForModel, latestUserQuestion: trimmed });
+      const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+      if (!geminiKey) {
+        setError("Set VITE_GEMINI_API_KEY in your .env file to enable FinTrack AI.");
+        setIsLoading(false);
+        return;
       }
+      const historyText = priorMessages.length === 0
+        ? "No prior conversation."
+        : priorMessages.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
+      
+      const content = await chatWithGemini({ 
+        snapshot: context, 
+        historyText, 
+        latestUserQuestion: trimmed, 
+        apiKey: geminiKey,
+        attachment: currentAttachment || undefined,
+        systemPromptOverride
+      });
+
       let addedGoals = 0;
+      let updatedGoals = 0;
+      let addedTx = 0;
+      let deletedTx = 0;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
+
+          // Handle Goals
           if (parsed && Array.isArray(parsed.goals)) {
-            const currentGoalTitles = new Set(goals.map((g) => g.title));
-            parsed.goals.forEach((g: unknown) => {
-              const goal = g as Record<string, unknown>;
-              if (typeof goal.title === "string" && !currentGoalTitles.has(goal.title)) {
-                let recalculatedTarget = 0;
-                const expenseSectionRegex = new RegExp(
-                  `(?:${goal.title}|trip|goal)[^\n]*:?((?:\n\\* [^\n]+\\$[0-9,.]+)+)`,
-                  "i"
+            parsed.goals.forEach((g: any) => {
+              if (typeof g.title !== "string") return;
+              const existingGoal = goals.find((eg) => eg.title.toLowerCase() === g.title.toLowerCase());
+
+              let recalculatedTarget = 0;
+              const expenseSectionRegex = new RegExp(
+                `(?:${g.title}|trip|goal)[^\\n]*:?((?:\\n\\* [^\\n]+\\$[0-9,.]+)+)`,
+                "i"
+              );
+              const match = content.match(expenseSectionRegex);
+              if (match?.[1]) {
+                const amounts = Array.from(match[1].matchAll(/\$([0-9,.]+)/g)).map(
+                  (m) => Number(m[1].replace(/,/g, ""))
                 );
-                const match = content.match(expenseSectionRegex);
-                if (match?.[1]) {
-                  const amounts = Array.from(match[1].matchAll(/\$([0-9,.]+)/g)).map(
-                    (m) => Number((m as RegExpMatchArray)[1].replace(/,/g, ""))
-                  );
-                  if (amounts.length > 0) recalculatedTarget = amounts.reduce((a, b) => a + b, 0);
-                }
-                useFinanceStore.getState().addGoal({
-                  title: goal.title,
-                  targetAmount: recalculatedTarget > 0 ? recalculatedTarget : Number(goal.targetAmount) || 0,
-                  currentAmount: Number(goal.currentAmount) || 0,
-                  deadline: typeof goal.deadline === "string" ? goal.deadline : "",
-                  monthlyContribution: Number(goal.monthlyContribution) || 0,
-                });
+                if (amounts.length > 0) recalculatedTarget = amounts.reduce((a, b) => a + b, 0);
+              }
+
+              const goalData = {
+                title: g.title,
+                targetAmount: recalculatedTarget > 0 ? recalculatedTarget : Number(g.targetAmount) || 0,
+                currentAmount: Number(g.currentAmount) || 0,
+                deadline: typeof g.deadline === "string" ? g.deadline : "",
+                monthlyContribution: Number(g.monthlyContribution) || 0,
+              };
+
+              if (existingGoal) {
+                useFinanceStore.getState().updateGoal(existingGoal.id, goalData);
+                updatedGoals++;
+              } else {
+                useFinanceStore.getState().addGoal(goalData);
                 addedGoals++;
               }
             });
           }
+
+          // Handle Transactions
+          if (parsed && Array.isArray(parsed.transactions)) {
+            parsed.transactions.forEach((tx: any) => {
+              if (tx.action === "add" && tx.amount && tx.type && tx.category) {
+                useFinanceStore.getState().addTransaction({
+                  type: tx.type,
+                  amount: Number(tx.amount),
+                  category: tx.category,
+                  date: typeof tx.date === "string" ? tx.date : new Date().toISOString().split("T")[0],
+                  note: tx.note || "Added via FinTrack AI",
+                });
+                addedTx++;
+              } else if (tx.action === "delete" && tx.id) {
+                useFinanceStore.getState().deleteTransaction(String(tx.id));
+                deletedTx++;
+              }
+            });
+          }
+
+          // Handle Custom Actions (Cut Plan & Shared Goals)
+          if (parsed && parsed.action === "updateGoalContribution" && parsed.goalId && parsed.newMonthlyAmount) {
+            useFinanceStore.getState().updateGoal(parsed.goalId, {
+              monthlyContribution: Number(parsed.newMonthlyAmount)
+            });
+            updatedGoals++;
+          }
+
+          if (parsed && parsed.action === "createGoal" && parsed.goal) {
+            const g = parsed.goal;
+            useFinanceStore.getState().addGoal({
+              title: g.title,
+              targetAmount: Number(g.targetAmount) || 0,
+              currentAmount: Number(g.currentAmount) || 0,
+              deadline: g.deadline || "",
+              monthlyContribution: Number(g.monthlyContribution) || 0,
+              type: g.type || 'savings',
+              isShared: !!g.isShared,
+              members: g.members || []
+            });
+            addedGoals++;
+          }
         }
-      } catch { /* ignore JSON parse errors */ }
+      } catch (err) {
+        console.warn("FinTrack: parsing data from AI block failed", err);
+      }
       const displayContent = stripJsonBlocks(content);
+      const totalChanges = addedGoals + updatedGoals + addedTx + deletedTx;
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: addedGoals > 0
-          ? displayContent + `\n\n✅ ${addedGoals} new goal${addedGoals > 1 ? "s" : ""} added to your Goals!`
+        content: totalChanges > 0
+          ? displayContent + `\n\n✅ Automatically updated your data (${totalChanges} change${totalChanges > 1 ? "s" : ""}).`
           : displayContent,
       };
       setMessages((prev) => [...prev, assistantMessage]);
@@ -341,16 +442,34 @@ export default function ScenarioLab() {
     );
   }
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const data = ev.target?.result as string;
+      setAttachment({ name: file.name, type: file.type, data });
+    };
+    if (file.type.startsWith("text/")) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsDataURL(file);
+    }
+  };
+
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-4">
       <motion.div variants={item}>
-        <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground flex items-center gap-2">
-          <FlaskConical className="h-8 w-8 text-primary" />Scenario Lab
-        </h1>
-        <p className="text-muted-foreground text-sm mt-1 max-w-xl">
-          Chat with FinTrack AI about your plans. Ask how trips, investments, or changing goal contributions will impact
-          your monthly budget and long-term goals.
-        </p>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground flex items-center gap-2">
+              <FlaskConical className="h-8 w-8 text-primary" />Scenario Lab
+            </h1>
+            <p className="text-muted-foreground text-sm mt-1 max-w-xl">
+              Chat with FinTrack AI about your plans, upload reports (PDF/Image), or generate financial summaries.
+            </p>
+          </div>
+        </div>
       </motion.div>
 
       <motion.div
@@ -466,13 +585,23 @@ export default function ScenarioLab() {
                 {messages.map((m) => (
                   <div key={m.id} className={`flex w-full ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                     <div
-                      className={`max-w-[min(100%,32rem)] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${
+                      className={`group relative max-w-[min(100%,32rem)] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${
                         m.role === "user"
                           ? "bg-primary text-primary-foreground rounded-br-md"
                           : "bg-muted text-foreground border border-border/50 rounded-bl-md"
                       }`}
                     >
                       {m.content}
+                      {m.role === "assistant" && m.content.length > 50 && (
+                        <button
+                          type="button"
+                          onClick={() => generateFinancePDF("Scenario Lab Report", m.content)}
+                          className="absolute -right-10 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-card border border-border hover:text-primary shadow-sm"
+                          title="Download as PDF"
+                        >
+                          <Download className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -493,10 +622,40 @@ export default function ScenarioLab() {
 
           <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-border">
             <div className="space-y-2">
-              <div className="flex w-full min-w-0 items-stretch rounded-2xl border border-border bg-background overflow-hidden">
+              {attachment && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 rounded-lg w-fit border border-primary/20 animate-in fade-in slide-in-from-bottom-2">
+                  <FileText className="h-3.5 w-3.5 text-primary" />
+                  <span className="text-[11px] font-medium text-primary truncate max-w-[150px]">
+                    {attachment.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachment(null)}
+                    className="hover:text-destructive p-0.5"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+              <div className="flex w-full min-w-0 items-stretch rounded-2xl border border-border bg-background overflow-hidden shadow-sm focus-within:ring-2 focus-within:ring-primary/20 transition-all">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  className="hidden"
+                  accept=".txt,.pdf,.png,.jpg,.jpeg"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="shrink-0 rounded-none border-r border-border h-auto min-h-[56px] px-3.5 hover:bg-muted"
+                >
+                  <Paperclip className="h-4 w-4 text-muted-foreground" />
+                </Button>
                 <Button
                   type="submit"
-                  disabled={isLoading || !input.trim()}
+                  disabled={isLoading || (!input.trim() && !attachment)}
                   className="gap-2 shrink-0 rounded-none border-r border-border h-auto min-h-[56px] px-4 self-stretch"
                 >
                   <Send className="h-4 w-4" />
@@ -514,9 +673,8 @@ export default function ScenarioLab() {
                 </CursorTooltip>
               </div>
               <span className="text-[11px] text-muted-foreground leading-snug block">
-                Uses a compact snapshot of your dashboard data per request. Local Ollama can be slow on CPU — try a
-                smaller model (<code className="text-[10px]">ollama pull llama3.2:1b</code>) or{" "}
-                <code className="text-[10px]">VITE_AI_PROVIDER=gemini</code>.
+                Uses a compact snapshot of your dashboard data per request. 
+                Powered by Google Gemini 1.5 Flash.
               </span>
             </div>
           </form>

@@ -9,10 +9,12 @@ A personal finance tracker with income & expense management, savings goals, AI-p
 | Page | Description |
 |------|-------------|
 | **Dashboard** | Monthly overview — income, expenses, net savings, savings rate, and charts (bar, pie, line). Navigate month-by-month through your transaction history. |
+| **Autopsy** | **New:** Detailed breakdown of "Essential vs. Optional" spending. Shows you exactly how much is discretionary and highlights categories that grew >10% month-over-month. |
+| **Waste** | **New:** Weekly proactive pulse on overspending. Compares your recent week to your 3-week average and highlights "leaks" that could be redirected to goals. |
 | **Transactions** | Add, edit, and delete income/expense entries across 15 categories (Salary, Rent, Food, Travel, etc.). |
 | **Goals** | Create savings goals with a target amount, deadline, and monthly contribution. Log contributions, track progress, and use the **Goal Optimizer** to get spending-cut recommendations. |
 | **Insights** | Rule-based spending alerts, month-over-month expense trend, safe-to-spend calculator, recommended 50/30/20 budget split, and top spending categories chart. |
-| **Scenario Lab** | AI chat — default **Ollama** (local Llama-class model) or optional **Gemini**; answers use your transactions, goals, and insights-style snapshot. Chat history is persisted to Supabase when configured. |
+| **Scenario Lab** | AI Financial Co-Worker — powered by **Google Gemini 1.5 Flash**. Answers questions using your transactions, goals, and financial context. Suggests **AI-Optimized Milestones** for new goals to keep you engaged. |
 | **Settings** | Placeholder for upcoming auth, notifications, and data export. |
 
 ---
@@ -40,7 +42,6 @@ Then open **http://localhost:8080** in your browser.
 | `npm run lint` | Run ESLint |
 | `npm run test` | Run tests (Vitest) |
 | `npm run test:watch` | Run tests in watch mode |
-| `npm run server` | Start the local LLM proxy (Ollama) on port 3001 — use with Scenario Lab |
 
 ---
 
@@ -56,11 +57,9 @@ cp .env.example .env
 |----------|----------|-------------|
 | `VITE_SUPABASE_URL` | Optional | Your Supabase project URL (e.g. `https://xxxx.supabase.co`) |
 | `VITE_SUPABASE_ANON_KEY` | Optional | Your Supabase anon/public API key |
-| `VITE_AI_PROVIDER` | Optional | `ollama` (default) or `gemini` — which backend Scenario Lab uses |
-| `VITE_GEMINI_API_KEY` | Optional | Required only if `VITE_AI_PROVIDER=gemini` |
-| `VITE_CHAT_API_URL` | Optional | Production: full base URL for the chat API; leave unset in dev (Vite proxies to `npm run server`) |
-| `VITE_OLLAMA_MODEL` | Optional | Model name sent to Ollama (default `llama3.2` on the server) |
-| `VITE_GOOGLE_CLIENT_ID` | Optional | Web OAuth client ID for Google Sign-In; add **both** `http://localhost:8080` and `http://127.0.0.1:8080` as authorised JavaScript origins if needed |
+| `VITE_GEMINI_API_KEY` | **Required** | API key for Google Gemini 1.5 Flash (the app's brain) |
+| `VITE_GEMINI_MODEL` | Optional | Model name (default: `gemini-1.5-flash`) |
+| `VITE_GOOGLE_CLIENT_ID` | Optional | Web OAuth client ID for Google Sign-In |
 
 If none of the variables are set, FinTrack runs entirely in-memory (data is lost on refresh).
 
@@ -113,37 +112,21 @@ If the env vars are not set, the app still runs using in-memory storage only.
 
 ## Scenario Lab (AI chat)
 
-Scenario Lab sends a structured snapshot of your finances (aligned with Dashboard / Transactions / Insights / Goals) to an AI.
+Scenario Lab sends a structured snapshot of your finances to **Google Gemini 1.5 Flash**.
 
-### Default: Ollama (local, open-source models)
-
-1. Install [Ollama](https://ollama.com) and pull a model, e.g. `ollama pull llama3.2`.
-2. In one terminal: `npm run server` (starts the small proxy on port **3001**).
-3. In another: `npm run dev`. Open `http://localhost:8080` (use the same host you add in Google OAuth if you use Sign-In).
-
-The Vite dev server proxies `/api/llm` to the chat server, which calls Ollama at `http://127.0.0.1:11434`.
-
-If Vite logs **`ECONNREFUSED 127.0.0.1:3001`**, the chat proxy is not running — start it with **`npm run server`** in another terminal (keep `npm run dev` running).
-
-Environment (optional): set `OLLAMA_MODEL`, `OLLAMA_BASE_URL`, or `OLLAMA_NUM_PREDICT` (cap on reply length — lower is faster on CPU) when running `npm run server` (see [`.env.example`](.env.example)). For quicker replies on a laptop CPU, try **`ollama pull llama3.2:1b`** and set `OLLAMA_MODEL=llama3.2:1b`.
-
-### Alternative: Google Gemini
-
+### Setup
 1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 2. In `.env`:
    ```env
-   VITE_AI_PROVIDER=gemini
    VITE_GEMINI_API_KEY=your-gemini-api-key
    ```
 3. Restart the dev server.
 
-**Example questions:**
-
-- *"Can I plan travel to Australia that will cost me $1,000?"*
-- *"If I invest some money in the stock market, how would that affect my monthly target?"*
-- *"If I put $2,000 instead of $3,000 into my goal contributions, how would that change things?"*
-
-The AI receives your actual transactions, goals, and savings balance as context and answers in structured steps. Chat history is persisted to the `ai_chat_messages` table in Supabase (when configured).
+### AI Features
+- **Contextual Awareness**: The AI sees your transactions, goals, and savings balance.
+- **Proactive Milestones**: When creating a goal, the AI suggests specific milestones (e.g., "Quarter-way there," "Downpayment fund") to make the goal more engaging.
+- **Natural Conversation**: Responds like a professional financial advisor, not a robot.
+- **Theme Independent**: Works perfectly in both **Light and Dark mode**.
 
 ---
 

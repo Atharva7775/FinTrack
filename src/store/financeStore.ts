@@ -11,6 +11,26 @@ export type Category =
 export const incomeCategories: Category[] = ['Salary', 'Freelance', 'Investments', 'Other Income'];
 export const expenseCategories: Category[] = ['Rent', 'Food', 'Travel', 'Subscriptions', 'Shopping', 'Utilities', 'Healthcare', 'Entertainment', 'Education', 'Savings', 'Other'];
 
+export type CategoryType = 'essential' | 'optional';
+
+export const CATEGORY_TYPE: Record<Category, CategoryType> = {
+  Salary: 'essential',
+  Freelance: 'essential',
+  Investments: 'essential',
+  'Other Income': 'essential',
+  Rent: 'essential',
+  Utilities: 'essential',
+  Healthcare: 'essential',
+  Education: 'essential',
+  Food: 'optional',
+  Travel: 'optional',
+  Subscriptions: 'optional',
+  Shopping: 'optional',
+  Entertainment: 'optional',
+  Savings: 'essential',
+  Other: 'optional',
+};
+
 export const categoryColors: Record<Category, string> = {
   Salary: 'hsl(172, 66%, 38%)',
   Freelance: 'hsl(172, 80%, 48%)',
@@ -49,6 +69,19 @@ export interface GoalContribution {
   amount: number;
 }
 
+export interface GoalMilestone {
+  label: string;
+  amount: number;
+}
+
+export type GoalType = 'savings' | 'budget';
+
+export interface GoalMember {
+  email: string;
+  status: 'invited' | 'active';
+  name?: string;
+}
+
 export interface Goal {
   id: string;
   title: string;
@@ -57,6 +90,10 @@ export interface Goal {
   deadline: string;
   monthlyContribution: number;
   contributions?: GoalContribution[];
+  milestones?: GoalMilestone[];
+  type?: GoalType;
+  isShared?: boolean;
+  members?: GoalMember[];
 }
 
 export interface HydratePayload {
@@ -78,10 +115,6 @@ interface FinanceStore {
   splitwiseBalances: { owe: number; owed: number } | null;
   viewMode: "personal" | "splitwise";
   setViewMode: (mode: "personal" | "splitwise") => void;
-  /** Add a new goal to the store */
-  addGoal: (g: Omit<Goal, 'id'>) => void;
-  /** Edit a transaction by id */
-  editTransaction: (id: string, updates: Partial<Transaction>) => void;
   setSplitwiseKey: (key: string | null) => void;
   setSplitwiseLastSync: (dateStr: string) => void;
   setSplitwiseBalances: (balances: { owe: number; owed: number } | null) => void;
@@ -184,3 +217,44 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
     });
   },
 }));
+
+// ─── Selectors ───────────────────────────────────────────────────────────────
+
+export function selectExpenseAutopsy(transactions: Transaction[], monthKey: string) {
+  const monthTx = transactions.filter(t => t.date.startsWith(monthKey) && t.type === 'expense');
+  
+  // Calculate previous month for MoM comparison
+  const d = new Date(`${monthKey}-01`);
+  d.setMonth(d.getMonth() - 1);
+  const prevMonthKey = d.toISOString().slice(0, 7);
+  const prevMonthTx = transactions.filter(t => t.date.startsWith(prevMonthKey) && t.type === 'expense');
+
+  const totalExpenses = monthTx.reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+  
+  const categorySummary = expenseCategories.map(cat => {
+    const amount = monthTx.filter(t => t.category === cat).reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+    const prevAmount = prevMonthTx.filter(t => t.category === cat).reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+    
+    let momDelta = null;
+    if (prevAmount > 0) {
+      momDelta = ((amount - prevAmount) / prevAmount) * 100;
+    }
+
+    return {
+      category: cat,
+      type: CATEGORY_TYPE[cat],
+      amount,
+      momDelta
+    };
+  }).filter(c => c.amount > 0);
+
+  const essentialTotal = categorySummary.filter(c => c.type === 'essential').reduce((s, c) => s + c.amount, 0);
+  const optionalTotal = categorySummary.filter(c => c.type === 'optional').reduce((s, c) => s + c.amount, 0);
+
+  return {
+    totalExpenses,
+    essentialTotal,
+    optionalTotal,
+    categories: categorySummary.sort((a, b) => b.amount - a.amount)
+  };
+}

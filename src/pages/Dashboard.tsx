@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { motion } from "framer-motion";
-import { TrendingUp, TrendingDown, DollarSign, PiggyBank, Info, ChevronLeft, ChevronRight } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, PiggyBank, Info, ChevronLeft, ChevronRight, Sparkles, User, Calendar } from "lucide-react";
 import AnimatedCounter from "@/components/AnimatedCounter";
 import { CursorTooltip } from "@/components/CursorTooltip";
 import { useFinanceStore } from "@/store/financeStore";
+import { useAuth } from "@/hooks/useAuth";
 import { getCurrentMonthKey, getMonthLabel, getAvailableMonthKeys, getLastNMonthsEndingAt } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -12,52 +13,49 @@ import {
   PieChart, Pie, Cell, LineChart, Line, Legend,
 } from "recharts";
 
-const DASHBOARD_FIELD_GUIDE = [
-  { term: "Total Income", description: "Total money received this month from salary, freelance, investments, and other income sources." },
-  { term: "Total Expenses", description: "Total money spent this month across all expense categories (rent, food, travel, subscriptions, etc.)." },
-  { term: "Net Savings", description: "Income minus expenses for this month. Positive means you saved; negative means you spent more than you earned." },
-  { term: "Savings Rate", description: "Percentage of your income that you saved this month (Net savings ÷ Total income × 100)." },
-  { term: "Income vs Expenses", description: "Bar chart comparing your total income and total expenses for each of the last four months." },
-  { term: "Expense Breakdown", description: "Pie chart showing how this month's expenses are split by category (e.g. rent, food, travel)." },
-  { term: "Savings Trend", description: "Line chart showing your net savings (income minus expenses) for each of the last four months." },
-];
-
 const container = {
   hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.08 } },
+  show: { opacity: 1, transition: { staggerChildren: 0.05 } },
 };
 const item = {
-  hidden: { opacity: 0, y: 16 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
+  hidden: { opacity: 0, y: 20 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.5 } },
 };
+
+function getTimeBasedGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
 
 export default function Dashboard() {
   const { transactions: allTx, viewMode, splitwiseBalances } = useFinanceStore();
+  const { user } = useAuth();
+  
   const transactions = useMemo(
     () => allTx.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise)),
     [allTx, viewMode]
   );
+  
   const availableMonths = useMemo(
     () => getAvailableMonthKeys(transactions.map((t) => t.date)),
     [transactions]
   );
+
   const currentKey = getCurrentMonthKey();
   const defaultMonth = availableMonths.includes(currentKey) ? currentKey : availableMonths[availableMonths.length - 1] ?? currentKey;
   const [selectedMonthKey, setSelectedMonthKey] = useState(defaultMonth);
+
   useEffect(() => {
     if (!availableMonths.includes(selectedMonthKey))
       setSelectedMonthKey(availableMonths[availableMonths.length - 1] ?? currentKey);
   }, [availableMonths, selectedMonthKey, currentKey]);
 
   const selectedMonthIndex = availableMonths.indexOf(selectedMonthKey);
-  const canPrev = selectedMonthIndex > 0;
-  const canNext = selectedMonthIndex >= 0 && selectedMonthIndex < availableMonths.length - 1;
-
-  const last4Months = getLastNMonthsEndingAt(selectedMonthKey, 4);
   const monthTx = transactions.filter((t) => t.date.startsWith(selectedMonthKey));
+  const last4Months = getLastNMonthsEndingAt(selectedMonthKey, 4);
 
-  // In splitwise mode, the top-level balances should be all-time exact balances from the Splitwise API.
-  // In personal mode, they reflect the current month's activity.
   const totalIncome = viewMode === "splitwise" 
     ? (splitwiseBalances?.owed ?? 0)
     : monthTx.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
@@ -78,193 +76,199 @@ export default function Dashboard() {
     };
   });
 
-  // Pie chart data
   const expenseByCategory: Record<string, number> = {};
   monthTx.filter((t) => t.type === "expense").forEach((t) => {
     expenseByCategory[t.category] = (expenseByCategory[t.category] || 0) + (t.usdAmount ?? t.amount);
   });
   const pieData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value }));
-  const pieColors = ["hsl(12,76%,58%)", "hsl(38,92%,50%)", "hsl(234,62%,56%)", "hsl(292,60%,50%)", "hsl(330,65%,55%)", "hsl(200,60%,50%)", "hsl(0,72%,55%)"];
-
-  const lineData = last4Months.map(({ key, label }) => {
-    const mt = transactions.filter((t) => t.date.startsWith(key));
-    const inc = mt.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
-    const exp = mt.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
-    return { month: label, Savings: inc - exp };
-  });
+  const pieColors = ["#10b981", "#f59e0b", "#6366f1", "#ec4899", "#ef4444", "#3b82f6", "#8b5cf6"];
 
   return (
-    <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Dashboard</h1>
-          <div className="flex items-center gap-2 mt-1">
-            <CursorTooltip content="Switch to the previous month in your transaction history.">
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                disabled={!canPrev}
-                onClick={() => setSelectedMonthKey(availableMonths[selectedMonthIndex - 1] ?? selectedMonthKey)}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-            </CursorTooltip>
-            <span className="text-muted-foreground text-sm min-w-[7rem] text-center font-medium">
-              {getMonthLabel(selectedMonthKey)} overview
-            </span>
-            <CursorTooltip content="Switch to the next month (up to current month).">
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                disabled={!canNext}
-                onClick={() => setSelectedMonthKey(availableMonths[selectedMonthIndex + 1] ?? selectedMonthKey)}
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </CursorTooltip>
+    <motion.div variants={container} initial="hidden" animate="show" className="space-y-8">
+      {/* Header section with personalized greeting */}
+      <motion.div variants={item} className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 px-3 py-1 bg-primary/10 text-primary rounded-full w-fit text-xs font-semibold">
+            <Sparkles className="h-3 w-3" />
+            <span>AI Powered Insights</span>
           </div>
+          <h1 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-foreground">
+            {getTimeBasedGreeting()}, {user?.name?.split(' ')[0] || 'there'}!
+          </h1>
+          <p className="text-muted-foreground">
+            Here's what's happening with your finances in <span className="text-foreground font-medium">{getMonthLabel(selectedMonthKey)}</span>.
+          </p>
         </div>
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" className="shrink-0 rounded-full text-muted-foreground hover:text-foreground" aria-label="What do these fields mean?">
-              <Info className="h-5 w-5" />
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="font-display">What each field means</DialogTitle>
-            </DialogHeader>
-            <ul className="space-y-4 pt-2 pr-2 max-h-[60vh] overflow-y-auto">
-              {DASHBOARD_FIELD_GUIDE.map(({ term, description }) => (
-                <li key={term}>
-                  <p className="font-medium text-foreground text-sm">{term}</p>
-                  <p className="text-muted-foreground text-sm mt-0.5">{description}</p>
-                </li>
-              ))}
-            </ul>
-          </DialogContent>
-        </Dialog>
+        
+        <div className="flex items-center gap-2 p-1 bg-muted/50 rounded-2xl border border-border">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9 rounded-xl hover:bg-background shadow-sm transition-all"
+            disabled={selectedMonthIndex <= 0}
+            onClick={() => setSelectedMonthKey(availableMonths[selectedMonthIndex - 1])}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <div className="flex items-center gap-2 px-4 py-1.5 min-w-[140px] justify-center bg-background rounded-xl shadow-sm border border-border">
+            <Calendar className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold">{getMonthLabel(selectedMonthKey)}</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9 rounded-xl hover:bg-background shadow-sm transition-all"
+            disabled={selectedMonthIndex >= availableMonths.length - 1}
+            onClick={() => setSelectedMonthKey(availableMonths[selectedMonthIndex + 1])}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      </motion.div>
+
+      {/* Modern Stat Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <SummaryCard 
+          title={viewMode === "splitwise" ? "You are owed" : "Total Income"}
+          amount={totalIncome}
+          icon={TrendingUp}
+          color="income"
+          description="Total cash inflow this month"
+        />
+        <SummaryCard 
+          title={viewMode === "splitwise" ? "You owe" : "Total Expenses"}
+          amount={totalExpense}
+          icon={TrendingDown}
+          color="expense"
+          description="Total cash outflow this month"
+        />
+        <SummaryCard 
+          title="Net Savings"
+          amount={netSavings}
+          icon={PiggyBank}
+          color="savings"
+          description={netSavings >= 0 ? "You're building wealth!" : "Budget is currently tight"}
+        />
+        <SummaryCard 
+          title="Savings Rate"
+          amount={savingsRate}
+          icon={DollarSign}
+          color="warning"
+          suffix="%"
+          decimals={1}
+          description="Efficiency of your saving"
+        />
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <CursorTooltip content="Total money received this month from salary, freelance, investments, and other income sources.">
-          <motion.div variants={item} className="stat-card-income rounded-2xl p-5">
-            <div className="relative z-10 flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-xl bg-income-muted">
-                <TrendingUp className="h-5 w-5 text-income" />
-              </div>
-              <span className="text-sm text-muted-foreground font-medium">
-                {viewMode === "splitwise" ? "You are owed" : "Total Income"}
-              </span>
+      {/* Main Content Grid */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <motion.div variants={item} className="xl:col-span-2 glass-card rounded-3xl p-6 lg:p-8 space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-display font-bold text-foreground">Monthly Flow</h3>
+            <div className="flex gap-4 text-xs font-medium">
+              <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-primary" /> Income</div>
+              <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-expense" /> Expenses</div>
             </div>
-            <AnimatedCounter value={totalIncome} className="relative z-10 text-2xl font-display font-bold text-foreground" />
-          </motion.div>
-        </CursorTooltip>
+          </div>
+          <div className="h-[320px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={barData} barGap={8}>
+                <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" vertical={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  cursor={{ fill: "hsl(var(--muted)/0.4)", radius: 10 }}
+                  contentStyle={{ borderRadius: 16, border: "none", boxShadow: "0 10px 25px -5px rgba(0,0,0,0.1)", background: "hsl(var(--card))" }}
+                />
+                <Bar dataKey="Income" fill="hsl(var(--primary))" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="Expenses" fill="hsl(var(--expense))" radius={[8, 8, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </motion.div>
 
-        <CursorTooltip content="Total money spent this month across all expense categories (rent, food, travel, etc.).">
-          <motion.div variants={item} className="stat-card-expense rounded-2xl p-5">
-            <div className="relative z-10 flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-xl bg-expense-muted">
-                <TrendingDown className="h-5 w-5 text-expense" />
-              </div>
-              <span className="text-sm text-muted-foreground font-medium">
-                {viewMode === "splitwise" ? "You owe" : "Total Expenses"}
-              </span>
-            </div>
-            <AnimatedCounter value={totalExpense} className="relative z-10 text-2xl font-display font-bold text-foreground" />
-          </motion.div>
-        </CursorTooltip>
-
-        {viewMode !== "splitwise" && (
-          <>
-            <CursorTooltip content="Income minus expenses for this month. Positive means you saved; negative means you spent more than you earned.">
-              <motion.div variants={item} className="stat-card-savings rounded-2xl p-5">
-                <div className="relative z-10 flex items-center gap-3 mb-3">
-                  <div className="p-2 rounded-xl bg-savings-muted">
-                    <PiggyBank className="h-5 w-5 text-savings" />
-                  </div>
-                  <span className="text-sm text-muted-foreground font-medium">Net Savings</span>
-                </div>
-                <AnimatedCounter value={netSavings} className="relative z-10 text-2xl font-display font-bold text-foreground" />
-              </motion.div>
-            </CursorTooltip>
-
-            <CursorTooltip content="Percentage of your income that you saved this month. (Net savings ÷ Total income × 100).">
-              <motion.div variants={item} className="stat-card-warning rounded-2xl p-5">
-                <div className="relative z-10 flex items-center gap-3 mb-3">
-                  <div className="p-2 rounded-xl bg-accent">
-                    <DollarSign className="h-5 w-5 text-warning" />
-                  </div>
-                  <span className="text-sm text-muted-foreground font-medium">Savings Rate</span>
-                </div>
-                <AnimatedCounter value={savingsRate} suffix="%" decimals={1} prefix="" className="relative z-10 text-2xl font-display font-bold text-foreground" />
-              </motion.div>
-            </CursorTooltip>
-          </>
-        )}
-      </div>
-
-      {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <CursorTooltip content="Bar chart comparing your total income and total expenses for each of the last four months.">
-          <motion.div variants={item} className="glass-card rounded-2xl p-6">
-            <h3 className="font-display font-semibold text-foreground mb-4">
-              {viewMode === "splitwise" ? "Owed vs Owe" : "Income vs Expenses"}
-            </h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={barData} barGap={4}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(210,18%,90%)" vertical={false} />
-              <XAxis dataKey="month" tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
-              <Tooltip
-                contentStyle={{ borderRadius: 12, border: "1px solid hsl(210,18%,90%)", boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }}
-                formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]}
-              />
-              <Bar dataKey="Income" name={viewMode === "splitwise" ? "You are Owed" : "Income"} fill="hsl(172,66%,38%)" radius={[6, 6, 0, 0]} />
-              <Bar dataKey="Expenses" name={viewMode === "splitwise" ? "You Owe" : "Expenses"} fill="hsl(12,76%,58%)" radius={[6, 6, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-          </motion.div>
-        </CursorTooltip>
-
-        <CursorTooltip content="Pie chart showing how this month’s expenses are split by category (e.g. rent, food, travel).">
-          <motion.div variants={item} className="glass-card rounded-2xl p-6">
-            <h3 className="font-display font-semibold text-foreground mb-4">
-              {viewMode === "splitwise" ? "Owe Breakdown" : "Expense Breakdown"}
-            </h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={3} dataKey="value">
-                {pieData.map((_, i) => (
-                  <Cell key={i} fill={pieColors[i % pieColors.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]} />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-          </motion.div>
-        </CursorTooltip>
-
-        {viewMode !== "splitwise" && (
-          <CursorTooltip content="Line chart showing your net savings (income minus expenses) for each of the last four months.">
-            <motion.div variants={item} className="glass-card rounded-2xl p-6 lg:col-span-2">
-              <h3 className="font-display font-semibold text-foreground mb-4">Savings Trend</h3>
-              <ResponsiveContainer width="100%" height={250}>
-                <LineChart data={lineData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(210,18%,90%)" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 12, fill: "hsl(210,10%,50%)" }} axisLine={false} tickLine={false} />
-                  <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid hsl(210,18%,90%)" }} formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]} />
-                  <Line type="monotone" dataKey="Savings" stroke="hsl(234,62%,56%)" strokeWidth={3} dot={{ fill: "hsl(234,62%,56%)", r: 5 }} />
-                </LineChart>
+        <motion.div variants={item} className="glass-card rounded-3xl p-6 lg:p-8 flex flex-col">
+          <h3 className="text-xl font-display font-bold text-foreground mb-6">Allocation</h3>
+          <div className="flex-1 flex flex-col items-center justify-center">
+            <div className="h-[280px] w-full relative">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie 
+                    data={pieData} 
+                    cx="50%" 
+                    cy="50%" 
+                    innerRadius={70} 
+                    outerRadius={100} 
+                    paddingAngle={5} 
+                    stroke="none"
+                    dataKey="value"
+                  >
+                    {pieData.map((_, i) => (
+                      <Cell key={i} fill={pieColors[i % pieColors.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    contentStyle={{ borderRadius: 16, border: "none", boxShadow: "0 10px 25px -5px rgba(0,0,0,0.1)" }}
+                  />
+                  <Legend verticalAlign="bottom" height={36}/>
+                </PieChart>
               </ResponsiveContainer>
-            </motion.div>
-          </CursorTooltip>
-        )}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-xs text-muted-foreground uppercase tracking-widest font-semibold">Spending</span>
+                <span className="text-2xl font-display font-bold">${totalExpense.toLocaleString()}</span>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    </motion.div>
+  );
+}
+
+interface SummaryCardProps {
+  title: string;
+  amount: number;
+  icon: any;
+  color: "income" | "expense" | "savings" | "warning";
+  description: string;
+  suffix?: string;
+  decimals?: number;
+}
+
+function SummaryCard({ title, amount, icon: Icon, color, description, suffix = "", decimals = 0 }: SummaryCardProps) {
+  const colorClass = {
+    income: "bg-primary/10 text-primary border-primary/20",
+    expense: "bg-expense/10 text-expense border-expense/20",
+    savings: "bg-savings/10 text-savings border-savings/20",
+    warning: "bg-warning/10 text-warning border-warning/20",
+  }[color];
+
+  const iconClass = {
+    income: "bg-primary text-primary-foreground",
+    expense: "bg-expense text-expense-foreground",
+    savings: "bg-savings text-savings-foreground",
+    warning: "bg-warning text-warning-foreground",
+  }[color];
+
+  return (
+    <motion.div variants={item} className="group relative flex flex-col p-6 glass-card rounded-3xl transition-all duration-300 hover:shadow-xl hover:-translate-y-1">
+      <div className="flex items-center justify-between mb-4">
+        <div className={`p-2.5 rounded-2xl ${iconClass} shadow-lg shadow-current/20`}>
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${colorClass}`}>
+          {title}
+        </div>
+      </div>
+      <div className="space-y-1">
+        <AnimatedCounter 
+          value={amount} 
+          suffix={suffix} 
+          decimals={decimals} 
+          prefix={suffix ? "" : "$"} 
+          className="text-2xl font-display font-bold text-foreground" 
+        />
+        <p className="text-xs text-muted-foreground line-clamp-1">{description}</p>
       </div>
     </motion.div>
   );

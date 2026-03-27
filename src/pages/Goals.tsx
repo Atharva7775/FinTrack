@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Plus, Trash2, Target, Wallet, Zap, LogIn } from "lucide-react";
-import { useFinanceStore, type Goal } from "@/store/financeStore";
+import { useFinanceStore, type Goal, type GoalMilestone } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
 import { CursorTooltip } from "@/components/CursorTooltip";
 import { Button } from "@/components/ui/button";
@@ -46,16 +46,46 @@ function CircularProgress({ percent, size = 100 }: { percent: number; size?: num
   );
 }
 
-function MilestoneIndicator({ percent }: { percent: number }) {
-  const milestones = [25, 50, 75, 100];
+function MilestoneIndicator({ percent, milestones, currentAmount }: { percent: number; milestones?: GoalMilestone[]; currentAmount: number }) {
+  const displayMilestones = milestones && milestones.length > 0 
+    ? milestones 
+    : [
+        { label: "Quarter", amount: 0.25 },
+        { label: "Halfway", amount: 0.5 },
+        { label: "Three-quarters", amount: 0.75 },
+        { label: "Complete", amount: 1 }
+      ].map(m => ({ label: m.label, amount: m.amount * (percent > 0 ? currentAmount / (percent/100) : 0) }));
+
   return (
-    <div className="flex gap-1.5 mt-3">
-      {milestones.map((m) => (
-        <div key={m} className="flex-1 flex flex-col items-center gap-1">
-          <div className={`h-1.5 w-full rounded-full transition-colors ${percent >= m ? "bg-primary" : "bg-muted"}`} />
-          <span className="text-[10px] text-muted-foreground">{m}%</span>
-        </div>
-      ))}
+    <div className="space-y-3 mt-6">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Milestones</h4>
+        <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-bold">
+          {milestones && milestones.length > 0 ? "AI Optimized" : "Standard"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {displayMilestones.slice(0, 4).map((m, idx) => {
+          const isReached = currentAmount >= m.amount;
+          return (
+            <div key={idx} className={`p-2 rounded-xl border transition-all ${isReached ? "bg-primary/5 border-primary/20" : "bg-muted/30 border-transparent text-muted-foreground"}`}>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-bold truncate pr-1">{m.label}</span>
+                {isReached && <Zap className="h-3 w-3 text-primary" />}
+              </div>
+              <div className="text-xs font-display font-bold text-foreground">
+                ${m.amount.toLocaleString()}
+              </div>
+              <div className="mt-1.5 h-1 w-full bg-muted rounded-full overflow-hidden">
+                <div 
+                  className={`h-full transition-all ${isReached ? "bg-primary" : "bg-muted-foreground/20"}`}
+                  style={{ width: `${Math.min(100, (currentAmount / m.amount) * 100)}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -69,7 +99,16 @@ export default function Goals() {
   const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution } = useFinanceStore();
   const { user, isLoading: authLoading } = useAuth();
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", targetAmount: "", currentAmount: "0", deadline: "2026-08-01", monthlyContribution: "" });
+  const [form, setForm] = useState({ 
+    title: "", 
+    targetAmount: "", 
+    currentAmount: "0", 
+    deadline: new Date(new Date().getFullYear(), new Date().getMonth() + 6, 1).toISOString().slice(0,10), 
+    monthlyContribution: "",
+    type: 'savings' as 'savings' | 'budget',
+    isShared: false,
+    members: ""
+  });
   const [contributionGoalId, setContributionGoalId] = useState<string | null>(null);
   const [contributionAmount, setContributionAmount] = useState("");
   const [contributionDate, setContributionDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -95,9 +134,30 @@ export default function Goals() {
     const current = parseFloat(form.currentAmount) || 0;
     const monthly = parseFloat(form.monthlyContribution) || 0;
     if (!form.title || !target) return;
-    addGoal({ title: form.title, targetAmount: target, currentAmount: current, deadline: form.deadline, monthlyContribution: monthly });
+    
+    const membersList = form.members.split(',').map(m => m.trim()).filter(m => m.includes('@')).map(email => ({ email, status: 'invited' as const }));
+
+    addGoal({ 
+      title: form.title, 
+      targetAmount: target, 
+      currentAmount: current, 
+      deadline: form.deadline, 
+      monthlyContribution: monthly,
+      type: form.type,
+      isShared: form.isShared,
+      members: membersList
+    });
     setOpen(false);
-    setForm({ title: "", targetAmount: "", currentAmount: "0", deadline: "2026-08-01", monthlyContribution: "" });
+    setForm({ 
+      title: "", 
+      targetAmount: "", 
+      currentAmount: "0", 
+      deadline: new Date(new Date().getFullYear(), new Date().getMonth() + 6, 1).toISOString().slice(0,10), 
+      monthlyContribution: "",
+      type: 'savings',
+      isShared: false,
+      members: ""
+    });
   };
 
   const handleRecordContribution = () => {
@@ -113,14 +173,21 @@ export default function Goals() {
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Savings Goals</h1>
-          <p className="text-muted-foreground text-sm mt-1">Track progress toward your financial milestones</p>
+          <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Goals & Budgets</h1>
+          <p className="text-muted-foreground text-sm mt-1">Track savings targets and shared monthly budgets</p>
         </div>
-        <CursorTooltip content="Open the form to create a new savings goal (e.g. emergency fund, vacation).">
-          <Button onClick={() => setOpen(true)} className="gap-2">
-            <Plus className="h-4 w-4" /> New Goal
-          </Button>
-        </CursorTooltip>
+        <div className="flex gap-2">
+          <CursorTooltip content="Create a new savings goal (e.g. emergency fund, vacation).">
+            <Button onClick={() => { setForm(f => ({ ...f, type: 'savings' })); setOpen(true); }} className="gap-2">
+              <Plus className="h-4 w-4" /> New Goal
+            </Button>
+          </CursorTooltip>
+          <CursorTooltip content="Create a new monthly spending budget (e.g. food limit, shopping cap).">
+            <Button variant="outline" onClick={() => { setForm(f => ({ ...f, type: 'budget' })); setOpen(true); }} className="gap-2 border-primary/20 hover:border-primary/50 text-primary">
+              <Plus className="h-4 w-4" /> New Budget
+            </Button>
+          </CursorTooltip>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
@@ -133,12 +200,17 @@ export default function Goals() {
             <motion.div key={goal.id} variants={item} className="glass-card rounded-2xl p-6">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-xl bg-savings-muted">
-                    <Target className="h-5 w-5 text-savings" />
+                  <div className={`p-2 rounded-xl ${goal.type === 'budget' ? 'bg-orange-500/10' : 'bg-savings-muted'}`}>
+                    {goal.type === 'budget' ? <Wallet className="h-5 w-5 text-orange-500" /> : <Target className="h-5 w-5 text-savings" />}
                   </div>
                   <div>
-                    <h3 className="font-display font-semibold text-foreground">{goal.title}</h3>
-                    <p className="text-xs text-muted-foreground">Due {goal.deadline}</p>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-display font-semibold text-foreground">{goal.title}</h3>
+                      {goal.isShared && (
+                        <span className="text-[10px] font-bold bg-primary/10 text-primary px-1.5 py-0.5 rounded uppercase tracking-wider">Shared</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">{goal.type === 'budget' ? 'Spending Limit' : 'Savings Target'} • {goal.deadline}</p>
                   </div>
                 </div>
                 <CursorTooltip content="Delete this goal permanently. Progress is not recovered.">
@@ -156,13 +228,30 @@ export default function Goals() {
                   </div>
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm text-muted-foreground">Saved</p>
+                  <p className="text-sm text-muted-foreground">{goal.type === 'budget' ? 'Limit spent' : 'Saved'}</p>
                   <p className="text-xl font-display font-bold text-foreground">${goal.currentAmount.toLocaleString()}</p>
                   <p className="text-xs text-muted-foreground">of ${goal.targetAmount.toLocaleString()}</p>
                 </div>
               </div>
 
-              <MilestoneIndicator percent={percent} />
+              {goal.isShared && goal.members && goal.members.length > 0 && (
+                <div className="mb-4 flex flex-col gap-1.5 p-3 rounded-xl bg-primary/5 border border-primary/10">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-primary/60">Collaborators</p>
+                  <div className="flex flex-wrap gap-1">
+                    {goal.members.map((m, idx) => (
+                      <span key={idx} className="text-[10px] bg-background border border-border px-1.5 py-0.5 rounded-md text-foreground font-medium" title={m.status}>
+                        {m.email.split('@')[0]}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <MilestoneIndicator 
+                percent={percent} 
+                milestones={goal.milestones} 
+                currentAmount={goal.currentAmount} 
+              />
 
               <div className="mt-4 pt-4 border-t border-border space-y-2">
                 <div className="flex justify-between text-sm">
@@ -246,26 +335,59 @@ export default function Goals() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="font-display">Create Savings Goal</DialogTitle>
+            <DialogTitle className="font-display">Create {form.type === 'budget' ? 'Spending Budget' : 'Savings Goal'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-2">
-            <CursorTooltip content="A short name for your goal (e.g. Emergency Fund, New Car).">
-              <div><Label>Goal Title</Label><Input placeholder="e.g., Emergency Fund" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
+            <CursorTooltip content="A short name for your goal or budget (e.g. Wedding Savings, Dining Limit).">
+              <div><Label>Title</Label><Input placeholder="e.g., Emergency Fund" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
             </CursorTooltip>
-            <CursorTooltip content="The total amount you want to save for this goal in dollars.">
-              <div><Label>Target Amount</Label><Input type="number" placeholder="10000" value={form.targetAmount} onChange={(e) => setForm({ ...form, targetAmount: e.target.value })} /></div>
-            </CursorTooltip>
-            <CursorTooltip content="How much you have already saved toward this goal so far.">
-              <div><Label>Current Amount</Label><Input type="number" placeholder="0" value={form.currentAmount} onChange={(e) => setForm({ ...form, currentAmount: e.target.value })} /></div>
-            </CursorTooltip>
-            <CursorTooltip content="How much you plan to add to this goal each month (used to estimate time to reach target).">
-              <div><Label>Monthly Contribution</Label><Input type="number" placeholder="500" value={form.monthlyContribution} onChange={(e) => setForm({ ...form, monthlyContribution: e.target.value })} /></div>
-            </CursorTooltip>
-            <CursorTooltip content="Target date by which you want to reach this goal.">
-              <div><Label>Deadline</Label><Input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} /></div>
-            </CursorTooltip>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Type</Label>
+                <div className="flex gap-2">
+                  <Button variant={form.type === 'savings' ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, type: 'savings' })}>Savings</Button>
+                  <Button variant={form.type === 'budget' ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, type: 'budget' })}>Budget</Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Visibility</Label>
+                <div className="flex gap-2">
+                  <Button variant={!form.isShared ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, isShared: false })}>Personal</Button>
+                  <Button variant={form.isShared ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, isShared: true })}>Shared</Button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <CursorTooltip content="Total amount to save OR monthly spending limit.">
+                <div><Label>Target Amount</Label><Input type="number" placeholder="10000" value={form.targetAmount} onChange={(e) => setForm({ ...form, targetAmount: e.target.value })} /></div>
+              </CursorTooltip>
+              <CursorTooltip content="Target date or budget expiry.">
+                <div><Label>Deadline</Label><Input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} /></div>
+              </CursorTooltip>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <CursorTooltip content="How much you have starting now.">
+                <div><Label>Current Amount</Label><Input type="number" placeholder="0" value={form.currentAmount} onChange={(e) => setForm({ ...form, currentAmount: e.target.value })} /></div>
+              </CursorTooltip>
+              <CursorTooltip content="Planned monthly saving toward this target.">
+                <div><Label>Monthly Plan</Label><Input type="number" placeholder="500" value={form.monthlyContribution} onChange={(e) => setForm({ ...form, monthlyContribution: e.target.value })} /></div>
+              </CursorTooltip>
+            </div>
+
+            {form.isShared && (
+              <CursorTooltip content="Enter email addresses separated by commas to invite people who have a FinTrack account.">
+                <div className="animate-in fade-in slide-in-from-top-2">
+                  <Label>Invite Collaborators (emails)</Label>
+                  <Input placeholder="friend@email.com, partner@fintrack.com" value={form.members} onChange={(e) => setForm({ ...form, members: e.target.value })} />
+                </div>
+              </CursorTooltip>
+            )}
+
             <CursorTooltip content="Save this goal and add it to your list.">
-              <Button onClick={handleSubmit} className="w-full">Create Goal</Button>
+              <Button onClick={handleSubmit} className="w-full h-12 text-lg font-display">Create {form.type === 'budget' ? 'Budget' : 'Goal'}</Button>
             </CursorTooltip>
           </div>
         </DialogContent>

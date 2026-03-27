@@ -15,7 +15,8 @@ import {
   LogIn,
   User,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/useAuth";
 import { useFinanceStore } from "@/store/financeStore";
@@ -82,7 +83,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <span className="font-display text-lg font-semibold text-foreground">FinTrack AI</span>
             </div>
           </CursorTooltip>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <ThemeToggle />
             <UserMenu />
           </div>
         </header>
@@ -129,14 +131,16 @@ function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () 
               <NavLink
                 to={item.url}
                 end={item.url === "/"}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 border border-transparent ${
                   isActive
-                    ? "bg-sidebar-primary/15 text-sidebar-primary"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                    ? "bg-primary/10 text-primary border-primary/20 shadow-sm"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}
                 activeClassName=""
               >
-                <item.icon className="h-5 w-5 flex-shrink-0" />
+                <div className={`p-1.5 rounded-lg transition-colors ${isActive ? "bg-primary/20" : "bg-transparent group-hover:bg-muted"}`}>
+                  <item.icon className="h-4.5 w-4.5 flex-shrink-0" />
+                </div>
                 <span>{item.title}</span>
               </NavLink>
             </CursorTooltip>

@@ -16,10 +16,13 @@ import SettingsPage from "./pages/Settings";
 import ScenarioLab from "./pages/ScenarioLab";
 import NotFound from "./pages/NotFound";
 
+import { ThemeProvider } from "@/components/theme-provider";
+
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
+    <ThemeProvider attribute="class" defaultTheme="light" storageKey="fintrack-theme">
     <AuthProvider>
       <TooltipProvider>
         <CursorTooltipProvider>
@@ -43,6 +46,7 @@ const App = () => (
         </CursorTooltipProvider>
       </TooltipProvider>
     </AuthProvider>
+    </ThemeProvider>
   </QueryClientProvider>
 );
 

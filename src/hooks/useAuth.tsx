@@ -26,20 +26,26 @@ interface AuthCtx {
   user: GoogleUser | null;
   signIn: () => void;
   signOut: () => void;
+  /** Sign in manually with a name and email (fallback for non-Google browsers). */
+  signInManually: (name: string, email: string) => void;
   isLoading: boolean;
   /** True when the GSI script has loaded (only relevant if VITE_GOOGLE_CLIENT_ID is set). */
   gsiReady: boolean;
   /** True after google.accounts.id.initialize has run. */
   gsiInitialized: boolean;
+  /** True when the GSI prompt could not be shown (e.g. unregistered origin, Brave shields). */
+  gsiBlocked: boolean;
 }
 
 const AuthContext = createContext<AuthCtx>({
   user: null,
   signIn: () => {},
   signOut: () => {},
+  signInManually: () => {},
   isLoading: true,
   gsiReady: false,
   gsiInitialized: false,
+  gsiBlocked: false,
 });
 
 const STORAGE_KEY = "fintrack_google_user";
@@ -72,6 +78,15 @@ interface GsiNotification {
   getDismissedReason?: () => string;
 }
 
+/** Reasons that indicate the browser/origin blocked GSI rather than the user. */
+const GSI_BLOCKED_REASONS = new Set([
+  "unregistered_origin",
+  "browser_not_supported",
+  "third_party_cookies_blocked",
+  "missing_client_id",
+  "invalid_client",
+]);
+
 /** Decode a Google JWT credential string (id_token) – no library needed. */
 function decodeJwt(token: string): GoogleUser | null {
   try {
@@ -87,37 +102,47 @@ function decodeJwt(token: string): GoogleUser | null {
   }
 }
 
-function notifyPromptResult(notification: GsiNotification) {
-  if (notification.isNotDisplayed?.()) {
-    const reason = notification.getNotDisplayedReason?.() ?? "unknown";
-    toast.error("Google sign-in could not be shown", {
-      description:
-        reason === "invalid_client"
-          ? "Check OAuth client ID and Authorized JavaScript origins in Google Cloud Console."
-          : `Reason: ${reason}. Try another browser or add http://localhost:8080 and http://127.0.0.1:8080 as origins.`,
-    });
-    return;
-  }
-  if (notification.isSkippedMoment?.()) {
-    const reason = notification.getSkippedReason?.() ?? "";
-    if (reason && reason !== "user_cancel") {
-      toast.message("Google sign-in skipped", { description: reason });
-    }
-    return;
-  }
-  if (notification.isDismissedMoment?.()) {
-    const reason = notification.getDismissedReason?.() ?? "";
-    if (reason === "credential_returned") return;
-    toast.message("Sign-in dismissed", { description: reason || undefined });
-  }
-}
+
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<GoogleUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [gsiReady, setGsiReady] = useState(false);
   const [gsiInitialized, setGsiInitialized] = useState(false);
+  const [gsiBlocked, setGsiBlocked] = useState(false);
   const pendingSignInRef = useRef(false);
+
+  const notifyPromptResult = useCallback((notification: GsiNotification) => {
+    if (notification.isNotDisplayed?.()) {
+      const reason = notification.getNotDisplayedReason?.() ?? "unknown";
+      if (GSI_BLOCKED_REASONS.has(reason)) {
+        setGsiBlocked(true);
+        toast.error("Google sign-in is blocked in this browser", {
+          description:
+            reason === "unregistered_origin"
+              ? "Add http://localhost:8080 to Authorized JavaScript Origins in Google Cloud Console, or use the manual sign-in below."
+              : "Use the manual sign-in form below, or try a different browser.",
+        });
+      } else {
+        toast.error("Google sign-in could not be shown", {
+          description: `Reason: ${reason}. Try another browser or use the manual sign-in below.`,
+        });
+      }
+      return;
+    }
+    if (notification.isSkippedMoment?.()) {
+      const reason = notification.getSkippedReason?.() ?? "";
+      if (reason && reason !== "user_cancel") {
+        toast.message("Google sign-in skipped", { description: reason });
+      }
+      return;
+    }
+    if (notification.isDismissedMoment?.()) {
+      const reason = notification.getDismissedReason?.() ?? "";
+      if (reason === "credential_returned") return;
+      toast.message("Sign-in dismissed", { description: reason || undefined });
+    }
+  }, []);
 
   // Restore session from storage
   useEffect(() => {
@@ -180,7 +205,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!gsiInitialized || !pendingSignInRef.current || !window.google) return;
     pendingSignInRef.current = false;
     window.google.accounts.id.prompt(notifyPromptResult);
-  }, [gsiInitialized]);
+  }, [gsiInitialized, notifyPromptResult]);
+
+  const signInManually = useCallback((name: string, email: string) => {
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedName || !trimmedEmail) return;
+    const manualUser: GoogleUser = { name: trimmedName, email: trimmedEmail, picture: "" };
+    setUser(manualUser);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(manualUser));
+    toast.success(`Signed in as ${trimmedName}`);
+  }, []);
 
   const signIn = useCallback(() => {
     if (!CLIENT_ID) {
@@ -217,7 +252,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     window.google.accounts.id.prompt(notifyPromptResult);
-  }, [gsiReady, gsiInitialized]);
+  }, [gsiReady, gsiInitialized, notifyPromptResult]);
 
   const signOut = useCallback(() => {
     if (window.google && user) {
@@ -230,7 +265,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, signIn, signOut, isLoading, gsiReady, gsiInitialized }}
+      value={{ user, signIn, signOut, signInManually, isLoading, gsiReady, gsiInitialized, gsiBlocked }}
     >
       {children}
     </AuthContext.Provider>

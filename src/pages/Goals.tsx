@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, Trash2, Target, Wallet, Zap } from "lucide-react";
+import { Plus, Trash2, Target, Wallet, Zap, LogIn } from "lucide-react";
 import { useFinanceStore, type Goal } from "@/store/financeStore";
+import { useAuth } from "@/hooks/useAuth";
 import { CursorTooltip } from "@/components/CursorTooltip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,6 +67,7 @@ function contributionThisMonth(goal: Goal): number {
 
 export default function Goals() {
   const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution } = useFinanceStore();
+  const { user, isLoading: authLoading } = useAuth();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ title: "", targetAmount: "", currentAmount: "0", deadline: "2026-08-01", monthlyContribution: "" });
   const [contributionGoalId, setContributionGoalId] = useState<string | null>(null);
@@ -73,6 +75,20 @@ export default function Goals() {
   const [contributionDate, setContributionDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [optimizerGoalId, setOptimizerGoalId] = useState<string | null>(null);
   const currentMonth = getCurrentMonthKey();
+
+  if (!authLoading && !user) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+          <LogIn className="h-8 w-8 text-primary" />
+        </div>
+        <h2 className="text-xl font-display font-semibold text-foreground">Sign in to view your goals</h2>
+        <p className="text-muted-foreground text-sm max-w-xs">
+          Your savings goals are private and tied to your account. Sign in to view and manage them.
+        </p>
+      </div>
+    );
+  }
 
   const handleSubmit = () => {
     const target = parseFloat(form.targetAmount);

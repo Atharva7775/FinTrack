@@ -22,7 +22,7 @@ export default function Transactions() {
     () => allTx.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise)),
     [allTx, viewMode]
   );
-  const { user, signIn } = useAuth();
+  const { user, signIn, isLoading: authLoading } = useAuth();
 
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -56,6 +56,20 @@ export default function Transactions() {
     if (filter !== "all") result = result.filter((t) => t.type === filter);
     return [...result].sort((a, b) => b.date.localeCompare(a.date));
   }, [transactions, selectedMonthKey, filter]);
+
+  if (!authLoading && !user) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+          <Plus className="h-8 w-8 text-primary rotate-45 opacity-60" />
+        </div>
+        <h2 className="text-xl font-display font-semibold text-foreground">Sign in to view your transactions</h2>
+        <p className="text-muted-foreground text-sm max-w-xs">
+          Your transaction history is private and tied to your account. Sign in to view, add, and export transactions.
+        </p>
+      </div>
+    );
+  }
 
   const categories = form.type === "income" ? incomeCategories : expenseCategories;
 

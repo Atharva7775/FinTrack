@@ -1,23 +1,30 @@
 import { getSupabase } from "./supabase";
 import type { Transaction, Goal, GoalContribution, HydratePayload } from "@/store/financeStore";
 
-const SETTINGS_KEY_SAVINGS = "savings_balance";
-const SETTINGS_KEY_SW_KEY = "splitwise_key";
-const SETTINGS_KEY_SW_SYNC = "splitwise_last_sync";
-const SETTINGS_KEY_VIEW_MODE = "view_mode";
-const SETTINGS_KEY_SW_BAL = "splitwise_balances";
+function settingsKeys(userEmail: string) {
+  const prefix = userEmail ? `${userEmail}:` : "";
+  return {
+    savings: `${prefix}savings_balance`,
+    swKey: `${prefix}splitwise_key`,
+    swSync: `${prefix}splitwise_last_sync`,
+    viewMode: `${prefix}view_mode`,
+    swBal: `${prefix}splitwise_balances`,
+  };
+}
 
 /** Fetch all data from Supabase and return in app shape. */
-export async function fetchFromSupabase(): Promise<HydratePayload | null> {
+export async function fetchFromSupabase(userEmail: string): Promise<HydratePayload | null> {
   const supabase = getSupabase();
   if (!supabase) return null;
 
+  const keys = settingsKeys(userEmail);
+
   try {
     const [txRes, goalsRes, contribRes, settingsRes] = await Promise.all([
-      supabase.from("transactions").select("id, type, amount, category, date, note, is_splitwise, splitwise_id, original_currency, original_amount, usd_amount, is_pending").order("date", { ascending: false }),
-      supabase.from("goals").select("id, title, target_amount, current_amount, deadline, monthly_contribution").order("created_at", { ascending: true }),
+      supabase.from("transactions").select("id, type, amount, category, date, note, is_splitwise, splitwise_id, original_currency, original_amount, usd_amount, is_pending").eq("user_email", userEmail).order("date", { ascending: false }),
+      supabase.from("goals").select("id, title, target_amount, current_amount, deadline, monthly_contribution").eq("user_email", userEmail).order("created_at", { ascending: true }),
       supabase.from("goal_contributions").select("goal_id, amount, date").order("date", { ascending: false }),
-      supabase.from("app_settings").select("key, value").in("key", [SETTINGS_KEY_SAVINGS, SETTINGS_KEY_SW_KEY, SETTINGS_KEY_SW_SYNC, SETTINGS_KEY_VIEW_MODE, SETTINGS_KEY_SW_BAL]),
+      supabase.from("app_settings").select("key, value").in("key", [keys.savings, keys.swKey, keys.swSync, keys.viewMode, keys.swBal]),
     ]);
 
     if (txRes.error) throw txRes.error;
@@ -63,11 +70,11 @@ export async function fetchFromSupabase(): Promise<HydratePayload | null> {
     let viewMode: "personal" | "splitwise" = "personal";
 
     (settingsRes.data || []).forEach(row => {
-      if (row.key === SETTINGS_KEY_SAVINGS && row.value != null) savingsBalance = Number(row.value);
-      if (row.key === SETTINGS_KEY_SW_KEY && row.value != null) splitwiseKey = String(row.value);
-      if (row.key === SETTINGS_KEY_SW_SYNC && row.value != null) splitwiseLastSync = String(row.value);
-      if (row.key === SETTINGS_KEY_SW_BAL && row.value != null) splitwiseBalances = row.value as { owe: number; owed: number };
-      if (row.key === SETTINGS_KEY_VIEW_MODE && row.value != null) viewMode = String(row.value) as any;
+      if (row.key === keys.savings && row.value != null) savingsBalance = Number(row.value);
+      if (row.key === keys.swKey && row.value != null) splitwiseKey = String(row.value);
+      if (row.key === keys.swSync && row.value != null) splitwiseLastSync = String(row.value);
+      if (row.key === keys.swBal && row.value != null) splitwiseBalances = row.value as { owe: number; owed: number };
+      if (row.key === keys.viewMode && row.value != null) viewMode = String(row.value) as "personal" | "splitwise";
     });
 
     return { transactions, goals, savingsBalance, splitwiseKey, splitwiseLastSync, splitwiseBalances, viewMode };
@@ -77,14 +84,16 @@ export async function fetchFromSupabase(): Promise<HydratePayload | null> {
   }
 }
 
-/** Write full app state to Supabase (replace all rows). */
-export async function persistToSupabase(payload: HydratePayload): Promise<boolean> {
+/** Write full app state to Supabase (replace all rows for this user). */
+export async function persistToSupabase(userEmail: string, payload: HydratePayload): Promise<boolean> {
   const supabase = getSupabase();
   if (!supabase) return false;
 
+  const keys = settingsKeys(userEmail);
+
   try {
-    // Replace all transactions (delete all then insert; PostgREST requires a filter so we use a no-op match)
-    const existingTx = await supabase.from("transactions").select("id");
+    // Replace this user's transactions
+    const existingTx = await supabase.from("transactions").select("id").eq("user_email", userEmail);
     if (existingTx.data && existingTx.data.length > 0) {
       const idsToDelete = existingTx.data.map((r) => r.id);
       for (let i = 0; i < idsToDelete.length; i += 100) {
@@ -96,6 +105,7 @@ export async function persistToSupabase(payload: HydratePayload): Promise<boolea
     if (payload.transactions.length > 0) {
       const rows = payload.transactions.map((t) => ({
         id: t.id,
+        user_email: userEmail,
         type: t.type,
         amount: t.amount,
         category: t.category,
@@ -112,8 +122,8 @@ export async function persistToSupabase(payload: HydratePayload): Promise<boolea
       if (error) throw error;
     }
 
-    // Replace all goals
-    const existingGoals = await supabase.from("goals").select("id");
+    // Replace this user's goals
+    const existingGoals = await supabase.from("goals").select("id").eq("user_email", userEmail);
     if (existingGoals.data && existingGoals.data.length > 0) {
       const goalIds = existingGoals.data.map((r) => r.id);
       const { error } = await supabase.from("goals").delete().in("id", goalIds);
@@ -122,6 +132,7 @@ export async function persistToSupabase(payload: HydratePayload): Promise<boolea
     if (payload.goals.length > 0) {
       const rows = payload.goals.map((g) => ({
         id: g.id,
+        user_email: userEmail,
         title: g.title,
         target_amount: g.targetAmount,
         current_amount: g.currentAmount,
@@ -151,19 +162,19 @@ export async function persistToSupabase(payload: HydratePayload): Promise<boolea
       if (error) throw error;
     }
 
-    // Upsert app_settings (savings, splitwise key, splitwise sync)
-    const settingsRows: any[] = [
-      { key: SETTINGS_KEY_SAVINGS, value: payload.savingsBalance, updated_at: new Date().toISOString() },
-      { key: SETTINGS_KEY_VIEW_MODE, value: payload.viewMode, updated_at: new Date().toISOString() },
+    // Upsert user-scoped app_settings
+    const settingsRows: { key: string; value: unknown; updated_at: string }[] = [
+      { key: keys.savings, value: payload.savingsBalance, updated_at: new Date().toISOString() },
+      { key: keys.viewMode, value: payload.viewMode, updated_at: new Date().toISOString() },
     ];
     if (payload.splitwiseKey !== undefined && payload.splitwiseKey !== null) {
-      settingsRows.push({ key: SETTINGS_KEY_SW_KEY, value: payload.splitwiseKey, updated_at: new Date().toISOString() });
+      settingsRows.push({ key: keys.swKey, value: payload.splitwiseKey, updated_at: new Date().toISOString() });
     }
     if (payload.splitwiseLastSync !== undefined && payload.splitwiseLastSync !== null) {
-      settingsRows.push({ key: SETTINGS_KEY_SW_SYNC, value: payload.splitwiseLastSync, updated_at: new Date().toISOString() });
+      settingsRows.push({ key: keys.swSync, value: payload.splitwiseLastSync, updated_at: new Date().toISOString() });
     }
     if (payload.splitwiseBalances !== undefined && payload.splitwiseBalances !== null) {
-      settingsRows.push({ key: SETTINGS_KEY_SW_BAL, value: payload.splitwiseBalances, updated_at: new Date().toISOString() });
+      settingsRows.push({ key: keys.swBal, value: payload.splitwiseBalances, updated_at: new Date().toISOString() });
     }
     const { error: settingsError } = await supabase.from("app_settings").upsert(
       settingsRows,

@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 const PORT = Number(process.env.CHAT_SERVER_PORT || 3001);
 const HOST = process.env.CHAT_SERVER_HOST || "127.0.0.1";
 const OLLAMA_BASE = (process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen:4b";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3:latest";
 const CHAT_SECRET = process.env.CHAT_API_SECRET || "";
 /** Cap output tokens for faster responses on CPU; raise if answers truncate. */
 const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 768);

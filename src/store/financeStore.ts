@@ -95,6 +95,8 @@ interface FinanceStore {
   setSavingsBalance: (amount: number) => void;
   /** Load data from database; also resets nextId from max existing id */
   hydrate: (payload: HydratePayload) => void;
+  /** Reset store to empty state (used on sign-out or user change) */
+  clearStore: () => void;
 }
 
 let nextId = SEED_TRANSACTIONS.length + 1;
@@ -167,6 +169,18 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
       splitwiseLastSync: payload.splitwiseLastSync,
       splitwiseBalances: payload.splitwiseBalances,
       viewMode: payload.viewMode,
+    });
+  },
+  clearStore: () => {
+    nextId = 1;
+    set({
+      transactions: [],
+      goals: [],
+      savingsBalance: 0,
+      splitwiseKey: null,
+      splitwiseLastSync: null,
+      splitwiseBalances: null,
+      viewMode: "personal",
     });
   },
 }));

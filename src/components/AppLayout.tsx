@@ -20,6 +20,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/useAuth";
 import { useFinanceStore } from "@/store/financeStore";
+import { useRealtimeSync } from "@/hooks/useRealtimeSync";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard, tooltip: "View your monthly income, expenses, savings, and charts at a glance." },
@@ -33,6 +34,8 @@ const navItems = [
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+  const { user } = useAuth();
+  useRealtimeSync(user?.email);
 
   return (
     <div className="flex min-h-screen w-full bg-background">

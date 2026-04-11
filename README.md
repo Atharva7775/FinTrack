@@ -9,13 +9,13 @@ A personal finance tracker with income & expense management, savings goals, AI-p
 | Page | Description |
 |------|-------------|
 | **Dashboard** | Monthly overview — income, expenses, net savings, savings rate, and charts (bar, pie, line). Navigate month-by-month through your transaction history. |
-| **Autopsy** | **New:** Detailed breakdown of "Essential vs. Optional" spending. Shows you exactly how much is discretionary and highlights categories that grew >10% month-over-month. |
-| **Waste** | **New:** Weekly proactive pulse on overspending. Compares your recent week to your 3-week average and highlights "leaks" that could be redirected to goals. |
+| **Autopsy** | Detailed breakdown of "Essential vs. Optional" spending. Shows you exactly how much is discretionary and highlights categories that grew >10% month-over-month. |
+| **Waste** | Weekly proactive pulse on overspending. Compares your recent week to your 3-week average and highlights "leaks" that could be redirected to goals. |
 | **Transactions** | Add, edit, and delete income/expense entries across 15 categories (Salary, Rent, Food, Travel, etc.). |
 | **Goals** | Create savings goals with a target amount, deadline, and monthly contribution. Log contributions, track progress, and use the **Goal Optimizer** to get spending-cut recommendations. |
 | **Insights** | Rule-based spending alerts, month-over-month expense trend, safe-to-spend calculator, recommended 50/30/20 budget split, and top spending categories chart. |
-| **Scenario Lab** | AI Financial Co-Worker — powered by **Google Gemini 1.5 Flash**. Answers questions using your transactions, goals, and financial context. Suggests **AI-Optimized Milestones** for new goals to keep you engaged. |
-| **Settings** | Placeholder for upcoming auth, notifications, and data export. |
+| **Scenario Lab** | AI Financial Co-Worker — powered by **Google Gemini 2.5 Flash**. Answers questions using your real transactions, goals, and financial context. Supports file/image attachments, Google Search grounding, and persistent AI Memory. |
+| **Settings** | Splitwise sync, seed data management, view mode toggle, and **AI Memory** — view and manage everything the AI has learned about you. |
 
 ---
 
@@ -57,8 +57,8 @@ cp .env.example .env
 |----------|----------|-------------|
 | `VITE_SUPABASE_URL` | Optional | Your Supabase project URL (e.g. `https://xxxx.supabase.co`) |
 | `VITE_SUPABASE_ANON_KEY` | Optional | Your Supabase anon/public API key |
-| `VITE_GEMINI_API_KEY` | **Required** | API key for Google Gemini 1.5 Flash (the app's brain) |
-| `VITE_GEMINI_MODEL` | Optional | Model name (default: `gemini-1.5-flash`) |
+| `VITE_GEMINI_API_KEY` | **Required** | API key for Google Gemini (get one at [Google AI Studio](https://aistudio.google.com/app/apikey)) |
+| `VITE_GEMINI_MODEL` | Optional | Model name (default: `gemini-2.5-flash`) |
 | `VITE_GOOGLE_CLIENT_ID` | Optional | Web OAuth client ID for Google Sign-In |
 
 If none of the variables are set, FinTrack runs entirely in-memory (data is lost on refresh).
@@ -112,7 +112,7 @@ If the env vars are not set, the app still runs using in-memory storage only.
 
 ## Scenario Lab (AI chat)
 
-Scenario Lab sends a structured snapshot of your finances to **Google Gemini 1.5 Flash**.
+Scenario Lab sends a structured snapshot of your finances to **Google Gemini 2.5 Flash**, augmented with a persistent User Knowledge Base and a Financial Operations Expert skill.
 
 ### Setup
 1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
@@ -123,10 +123,16 @@ Scenario Lab sends a structured snapshot of your finances to **Google Gemini 1.5
 3. Restart the dev server.
 
 ### AI Features
-- **Contextual Awareness**: The AI sees your transactions, goals, and savings balance.
-- **Proactive Milestones**: When creating a goal, the AI suggests specific milestones (e.g., "Quarter-way there," "Downpayment fund") to make the goal more engaging.
-- **Natural Conversation**: Responds like a professional financial advisor, not a robot.
-- **Theme Independent**: Works perfectly in both **Light and Dark mode**.
+
+| Feature | Description |
+|---------|-------------|
+| **Financial Context** | AI sees your real transactions, goals, savings balance, and spending trends on every message. |
+| **AI Memory (Knowledge Base)** | The AI passively learns about you across conversations — your city, risk tolerance, stated goals, spending personality labels, and preferences. Stored per-user in Supabase. Manageable in Settings → AI Memory. |
+| **Financial Operations Expert** | Built-in skill covering profit/loss analysis, tax planning (quarterly estimates, S-Corp thresholds), cash flow forecasting, and bookkeeping frameworks. |
+| **Google Search Grounding** | Gemini automatically searches the web for live data (interest rates, tax rules, market info) when your question requires it. |
+| **File & Image Attachments** | Attach bank statements, PDFs, or screenshots — the AI reads and analyzes them against your data. |
+| **AI-Optimized Goal Milestones** | When creating a goal, the AI suggests specific milestones to keep you engaged. |
+| **Action Blocks** | Ask the AI to create a goal, log a transaction, or set a budget — it emits structured JSON that the app applies automatically. |
 
 ---
 
@@ -144,25 +150,40 @@ src/
 │   └── ui/                   # shadcn/ui primitives
 ├── hooks/
 │   ├── use-mobile.tsx
-│   └── use-toast.ts
+│   ├── use-toast.ts
+│   └── useAuth.tsx            # Supabase auth hook
 ├── lib/
 │   ├── supabase.ts            # Supabase client
 │   ├── supabaseSync.ts        # Fetch/persist helpers
-│   └── utils.ts              # Date helpers, class utilities
+│   ├── aiChatClient.ts        # Gemini REST client (Google Search grounding enabled)
+│   ├── aiContextBuilder.ts    # Builds system prompt with KB + Financial Expert skill
+│   ├── aiSystemPrompt.ts      # Base prompt + KB_UPDATE format instructions
+│   ├── userKnowledgeBase.ts   # AI Memory — types, derive, merge, load, save
+│   ├── financialSnapshotForAI.ts # Serializes store state for AI context
+│   ├── scenarioEngine.ts      # Scenario simulation helpers
+│   ├── splitwise.ts           # Splitwise API integration
+│   ├── pdfGenerator.ts        # PDF report export
+│   └── utils.ts               # Date helpers, class utilities
 ├── pages/
 │   ├── Dashboard.tsx          # Monthly overview & charts
 │   ├── Transactions.tsx       # Transaction list & form
 │   ├── Goals.tsx              # Goals list, contributions, optimizer
 │   ├── Insights.tsx           # Spending analysis & budget suggestions
-│   ├── ScenarioLab.tsx        # Gemini AI chat
-│   ├── Settings.tsx           # Placeholder (coming soon)
+│   ├── ScenarioLab.tsx        # Gemini AI chat with KB integration
+│   ├── Settings.tsx           # Splitwise sync, seed data, AI Memory viewer
 │   └── NotFound.tsx
 ├── store/
-│   └── financeStore.ts        # Zustand global state (transactions, goals, savings)
+│   ├── financeStore.ts        # Zustand global state (transactions, goals, savings)
+│   └── chatStore.ts           # Persisted chat history
 ├── App.tsx
 └── main.tsx
+.agents/
+└── skills/
+    └── financial-operations-expert/
+        └── SKILL.md           # Financial expert skill injected into AI system prompt
 supabase/
-└── schema.sql                 # All table definitions
+├── schema.sql                 # All table definitions
+└── migrations/                # Incremental schema changes
 ```
 
 ---
@@ -179,7 +200,8 @@ supabase/
 | Charts | [Recharts](https://recharts.org/) |
 | Animations | [Framer Motion](https://www.framer-motion.com/) |
 | Database | [Supabase](https://supabase.com/) (PostgreSQL) — optional |
-| AI | [Google Gemini 1.5 Flash](https://aistudio.google.com/) — optional |
+| AI | [Google Gemini 2.5 Flash](https://aistudio.google.com/) with Google Search grounding |
+| AI Skills | Financial Operations Expert (profit/loss, tax planning, cash flow) |
 | Forms | [React Hook Form](https://react-hook-form.com/) + [Zod](https://zod.dev/) |
 | Testing | [Vitest](https://vitest.dev/) + [Testing Library](https://testing-library.com/) |
 

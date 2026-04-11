@@ -53,8 +53,9 @@ export async function chatWithGemini(params: {
         contents: [{ role: "user", parts }],
         generationConfig: { 
           temperature: 0.35,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 8192,
         },
+        tools: [{ google_search: {} }],
       }),
     }
   );

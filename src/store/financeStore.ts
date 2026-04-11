@@ -96,6 +96,9 @@ export interface Goal {
   members?: GoalMember[];
 }
 
+// User-editable category type overrides
+export type UserCategoryTypeOverrides = Partial<Record<Category, CategoryType>>;
+
 export interface HydratePayload {
   transactions: Transaction[];
   goals: Goal[];
@@ -104,6 +107,7 @@ export interface HydratePayload {
   splitwiseLastSync: string | null;
   splitwiseBalances: { owe: number; owed: number } | null;
   viewMode: "personal" | "splitwise";
+  budgetSplit?: [number, number, number]; // [needs, wants, savings] as percentages (0-100)
 }
 
 interface FinanceStore {
@@ -114,6 +118,8 @@ interface FinanceStore {
   splitwiseLastSync: string | null;
   splitwiseBalances: { owe: number; owed: number } | null;
   viewMode: "personal" | "splitwise";
+  budgetSplit: [number, number, number];
+  setBudgetSplit: (split: [number, number, number]) => void;
   setViewMode: (mode: "personal" | "splitwise") => void;
   setSplitwiseKey: (key: string | null) => void;
   setSplitwiseLastSync: (dateStr: string) => void;
@@ -130,11 +136,13 @@ interface FinanceStore {
   hydrate: (payload: HydratePayload) => void;
   /** Reset store to empty state (used on sign-out or user change) */
   clearStore: () => void;
+  userCategoryType: UserCategoryTypeOverrides;
+  setCategoryType: (category: Category, type: CategoryType) => void;
 }
 
 let nextId = SEED_TRANSACTIONS.length + 1;
 
-export const useFinanceStore = create<FinanceStore>((set) => ({
+export const useFinanceStore = create<FinanceStore>((set, get) => ({
   transactions: SEED_TRANSACTIONS,
   goals: [],
   savingsBalance: 0,
@@ -142,6 +150,8 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
   splitwiseLastSync: null,
   splitwiseBalances: null,
   viewMode: "personal",
+  budgetSplit: [50, 30, 20],
+  setBudgetSplit: (split) => set({ budgetSplit: split }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setSplitwiseKey: (key) => set({ splitwiseKey: key }),
   setSplitwiseLastSync: (dateStr) => set({ splitwiseLastSync: dateStr }),
@@ -166,9 +176,11 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
   updateGoal: (id, updates) => set((s) => ({
     goals: s.goals.map((g) => g.id === id ? { ...g, ...updates } : g),
   })),
-  deleteGoal: (id) => set((s) => ({
-    goals: s.goals.filter((g) => g.id !== id),
-  })),
+  deleteGoal: async (id) => {
+    set((s) => ({
+      goals: s.goals.filter((g) => g.id !== id),
+    }));
+  },
   addGoalContribution: (goalId, amount, date) => set((s) => {
     const goal = s.goals.find((g) => g.id === goalId);
     const title = goal?.title ?? 'Goal';
@@ -202,6 +214,7 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
       splitwiseLastSync: payload.splitwiseLastSync,
       splitwiseBalances: payload.splitwiseBalances,
       viewMode: payload.viewMode,
+      budgetSplit: payload.budgetSplit || [50, 30, 20],
     });
   },
   clearStore: () => {
@@ -214,10 +227,15 @@ export const useFinanceStore = create<FinanceStore>((set) => ({
       splitwiseLastSync: null,
       splitwiseBalances: null,
       viewMode: "personal",
+      budgetSplit: [50, 30, 20],
+      userCategoryType: {},
     });
   },
+  userCategoryType: {},
+  setCategoryType: (category, type) => set((s) => ({
+    userCategoryType: { ...s.userCategoryType, [category]: type },
+  })),
 }));
-
 // ─── Selectors ───────────────────────────────────────────────────────────────
 
 export function selectExpenseAutopsy(transactions: Transaction[], monthKey: string) {
@@ -258,3 +276,5 @@ export function selectExpenseAutopsy(transactions: Transaction[], monthKey: stri
     categories: categorySummary.sort((a, b) => b.amount - a.amount)
   };
 }
+
+

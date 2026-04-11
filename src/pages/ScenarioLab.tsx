@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   FlaskConical,
   MessageSquare,
@@ -15,6 +17,7 @@ import {
   FileText,
   X,
   Download,
+  Sheet,
 } from "lucide-react";
 import { useFinanceStore } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
@@ -26,6 +29,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { CursorTooltip } from "@/components/CursorTooltip";
 import { generateFinancePDF } from "@/lib/pdfGenerator";
 import {
+  loadKnowledgeBase,
+  saveKnowledgeBase,
+  createEmptyKnowledgeBase,
+  deriveSpendingPersonality,
+  mergeKnowledgeBaseUpdate,
+  type UserKnowledgeBase,
+} from "@/lib/userKnowledgeBase";
+import {
   fetchChatSessions,
   createChatSession,
   fetchSessionMessages,
@@ -36,6 +47,21 @@ import {
 } from "@/lib/chatSync";
 
 const SESSION_STORAGE_KEY = "fintrack_active_chat_session_id";
+
+function extractCsvFromMessage(content: string): string | null {
+  const match = content.match(/```csv\r?\n([\s\S]*?)```/);
+  return match ? match[1].trim() : null;
+}
+
+function downloadCsv(csvContent: string) {
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `fintrack-report-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 type ChatRole = "user" | "assistant";
 
@@ -116,6 +142,7 @@ function greetingMessage(displayName?: string | null): ChatMessage {
 
 function stripJsonBlocks(text: string): string {
   return text
+    .replace(/\{[\s\S]*?"kb_update"[\s\S]*?\}(?:\s*\})?/g, "")
     .replace(/\{[\s\S]*\}/g, "")
     .replace(/```json[\s\S]*```/g, "")
     .replace(/(?:here is the json|the following json|i've added the goal|json block)[^.!?:\n]*[:\n\s]*/gi, "")
@@ -135,6 +162,7 @@ export default function ScenarioLab() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [knowledgeBase, setKnowledgeBase] = useState<UserKnowledgeBase | null>(null);
 
   const [attachment, setAttachment] = useState<{ name: string; type: string; data: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -143,7 +171,7 @@ export default function ScenarioLab() {
   const supabaseConfigured = isSupabaseConfigured();
 
   const context = buildFinancialContext();
-  const systemPromptOverride = buildSystemPrompt(context);
+  const systemPromptOverride = buildSystemPrompt(context, knowledgeBase);
 
   const startNewSession = useCallback(
     async (userName?: string | null): Promise<string> => {
@@ -226,6 +254,24 @@ export default function ScenarioLab() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, isLoading]);
+
+  // Load (or bootstrap) knowledge base when user is known
+  useEffect(() => {
+    if (!user?.email || !supabaseConfigured) return;
+    let cancelled = false;
+    (async () => {
+      let kb = await loadKnowledgeBase(user.email);
+      if (!kb) {
+        // First time: auto-derive personality from existing transactions then save
+        const { transactions } = useFinanceStore.getState();
+        kb = createEmptyKnowledgeBase();
+        kb.spendingPersonality = deriveSpendingPersonality(transactions);
+        await saveKnowledgeBase(user.email, kb);
+      }
+      if (!cancelled) setKnowledgeBase(kb);
+    })();
+    return () => { cancelled = true; };
+  }, [user?.email, supabaseConfigured]);
 
   const switchSession = async (sessionId: string) => {
     if (sessionId === activeSessionId) return;
@@ -382,6 +428,16 @@ export default function ScenarioLab() {
               members: g.members || []
             });
             addedGoals++;
+          }
+
+          // Handle Knowledge Base updates
+          if (parsed && parsed.kb_update && user?.email) {
+            const existingKb = knowledgeBase || createEmptyKnowledgeBase();
+            const updatedKb = mergeKnowledgeBaseUpdate(existingKb, parsed.kb_update);
+            setKnowledgeBase(updatedKb);
+            if (supabaseConfigured) {
+              saveKnowledgeBase(user.email, updatedKb);
+            }
           }
         }
       } catch (err) {
@@ -585,22 +641,76 @@ export default function ScenarioLab() {
                 {messages.map((m) => (
                   <div key={m.id} className={`flex w-full ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                     <div
-                      className={`group relative max-w-[min(100%,32rem)] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${
+                      className={`group relative max-w-[min(100%,38rem)] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
                         m.role === "user"
-                          ? "bg-primary text-primary-foreground rounded-br-md"
+                          ? "bg-primary text-primary-foreground rounded-br-md whitespace-pre-wrap"
                           : "bg-muted text-foreground border border-border/50 rounded-bl-md"
                       }`}
                     >
-                      {m.content}
-                      {m.role === "assistant" && m.content.length > 50 && (
-                        <button
-                          type="button"
-                          onClick={() => generateFinancePDF("Scenario Lab Report", m.content)}
-                          className="absolute -right-10 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-card border border-border hover:text-primary shadow-sm"
-                          title="Download as PDF"
+                      {m.role === "user" ? (
+                        m.content
+                      ) : (
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            table: ({ children }) => (
+                              <div className="overflow-x-auto my-2">
+                                <table className="w-full border-collapse text-xs">{children}</table>
+                              </div>
+                            ),
+                            thead: ({ children }) => <thead className="bg-border/30">{children}</thead>,
+                            th: ({ children }) => (
+                              <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>
+                            ),
+                            td: ({ children }) => (
+                              <td className="border border-border px-2 py-1">{children}</td>
+                            ),
+                            code: ({ className, children }) => {
+                              const isBlock = className !== undefined || String(children).includes('\n');
+                              return isBlock ? (
+                                <pre className="bg-background/60 border border-border rounded-lg px-3 py-2 my-2 overflow-x-auto text-xs font-mono whitespace-pre">
+                                  <code>{children}</code>
+                                </pre>
+                              ) : (
+                                <code className="bg-background/60 px-1 rounded text-xs font-mono">{children}</code>
+                              );
+                            },
+                            p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                            ul: ({ children }) => <ul className="list-disc pl-4 mb-1 space-y-0.5">{children}</ul>,
+                            ol: ({ children }) => <ol className="list-decimal pl-4 mb-1 space-y-0.5">{children}</ol>,
+                            strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                            h1: ({ children }) => <h1 className="text-base font-bold mt-2 mb-1">{children}</h1>,
+                            h2: ({ children }) => <h2 className="text-sm font-bold mt-2 mb-1">{children}</h2>,
+                            h3: ({ children }) => <h3 className="text-sm font-semibold mt-1 mb-0.5">{children}</h3>,
+                          }}
                         >
-                          <Download className="h-4 w-4" />
-                        </button>
+                          {m.content}
+                        </ReactMarkdown>
+                      )}
+                      {m.role === "assistant" && m.content.length > 50 && (
+                        <div className="absolute -right-10 top-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={() => generateFinancePDF("Scenario Lab Report", m.content)}
+                            className="p-1.5 rounded-lg bg-card border border-border hover:text-primary shadow-sm"
+                            title="Download as PDF"
+                          >
+                            <Download className="h-4 w-4" />
+                          </button>
+                          {extractCsvFromMessage(m.content) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const csv = extractCsvFromMessage(m.content);
+                                if (csv) downloadCsv(csv);
+                              }}
+                              className="p-1.5 rounded-lg bg-card border border-border hover:text-emerald-500 shadow-sm"
+                              title="Export to Excel / CSV"
+                            >
+                              <Sheet className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>

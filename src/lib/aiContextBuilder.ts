@@ -1,11 +1,20 @@
 import { useFinanceStore, selectExpenseAutopsy, CATEGORY_TYPE } from '../store/financeStore'
+import type { UserKnowledgeBase } from './userKnowledgeBase'
+import FINANCIAL_EXPERT_SKILL from '../../.agents/skills/financial-operations-expert/SKILL.md?raw'
 
 // ─── Context serializer ───────────────────────────────────────────────────────
 
 export function buildFinancialContext() {
   const { transactions, goals, savingsBalance } = useFinanceStore.getState()
 
-  const currentMonth = new Date().toISOString().slice(0, 7)
+  // Use the most recent month with actual data, not the real calendar month.
+  // This prevents empty snapshots when the user hasn't added transactions yet
+  // for the current calendar month (e.g. April 2026 with no April data).
+  const allMonthsWithData = Array.from(
+    new Set(transactions.map(t => t.date.slice(0, 7)))
+  ).sort().reverse()
+  const currentMonth = allMonthsWithData[0] || new Date().toISOString().slice(0, 7)
+
   const autopsy = selectExpenseAutopsy(transactions, currentMonth)
 
   // Income this month
@@ -14,11 +23,12 @@ export function buildFinancialContext() {
     .reduce((s, t) => s + (t.usdAmount ?? t.amount), 0)
 
   // Last 3 months of optional spending per category (for trend context)
-  const d = new Date()
+  // Anchor to the most recent data month, not the calendar month.
+  const [year, month] = currentMonth.split('-').map(Number)
   const months = [
-    new Date(d.getFullYear(), d.getMonth() - 2, 1).toISOString().slice(0, 7),
-    new Date(d.getFullYear(), d.getMonth() - 1, 1).toISOString().slice(0, 7),
-    currentMonth
+    new Date(year, month - 3, 1).toISOString().slice(0, 7),
+    new Date(year, month - 2, 1).toISOString().slice(0, 7),
+    currentMonth,
   ]
 
   const optionalTrend = autopsy.categories
@@ -65,8 +75,54 @@ export function buildFinancialContext() {
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 
-export function buildSystemPrompt(ctx: ReturnType<typeof buildFinancialContext>) {
-  return `You are a direct, numbers-first financial coach embedded in FinTrack.
+function buildKnowledgeBaseSection(kb: UserKnowledgeBase): string {
+  const lines: string[] = ['─── USER KNOWLEDGE BASE ───'];
+
+  const pf = kb.personalFacts;
+  const pfParts: string[] = [];
+  if (pf.city)                pfParts.push(`City: ${pf.city}`);
+  if (pf.age)                 pfParts.push(`Age: ${pf.age}`);
+  if (pf.employmentType)      pfParts.push(`Employment: ${pf.employmentType}`);
+  if (pf.dependents !== undefined) pfParts.push(`Dependents: ${pf.dependents}`);
+  if (pf.riskTolerance)       pfParts.push(`Risk Tolerance: ${pf.riskTolerance}`);
+  if (pf.hasEmergencyFund !== undefined) pfParts.push(`Emergency Fund: ${pf.hasEmergencyFund ? 'Yes' : 'No'}`);
+  if (pf.hasInvestments !== undefined)   pfParts.push(`Has Investments: ${pf.hasInvestments ? 'Yes' : 'No'}`);
+  if (pf.primaryFinancialGoal) pfParts.push(`Primary Goal: ${pf.primaryFinancialGoal}`);
+  if (pfParts.length > 0) lines.push('Personal: ' + pfParts.join(' | '));
+
+  const sp = kb.spendingPersonality;
+  if (sp.labels.length > 0) lines.push(`Spending Labels: ${sp.labels.join(', ')}`);
+  if (sp.topCategories.length > 0) lines.push(`Top Categories: ${sp.topCategories.join(', ')}`);
+  if (sp.averageMonthlyExpenses > 0)
+    lines.push(`Avg Monthly: income $${sp.averageMonthlyIncome.toLocaleString()} / expenses $${sp.averageMonthlyExpenses.toLocaleString()} / savings ${sp.savingsConsistency}`);
+
+  const prefs = kb.preferences;
+  lines.push(`Preferences: response=${prefs.responseStyle}, focus=${prefs.focusArea}`);
+
+  const activeGoals = kb.statedGoals.filter(g => g.status !== 'dismissed');
+  if (activeGoals.length > 0) {
+    lines.push('Mentioned Goals: ' + activeGoals.map(g => `"${g.description}" [${g.status}]`).join(', '));
+  }
+
+  const recentNotes = kb.aiNotes.slice(-5);
+  if (recentNotes.length > 0) {
+    lines.push('AI Notes:');
+    recentNotes.forEach(n => lines.push(`  [${n.category}] ${n.note}`));
+  }
+
+  lines.push('──────────────────────────────────────────────');
+  return lines.join('\n');
+}
+
+export function buildSystemPrompt(ctx: ReturnType<typeof buildFinancialContext>, kb?: UserKnowledgeBase | null) {
+  const kbSection = kb ? buildKnowledgeBaseSection(kb) : '';
+  // Strip YAML frontmatter from the skill file before injecting
+  const skillInstructions = FINANCIAL_EXPERT_SKILL.replace(/^---[\s\S]*?---\n/, '').trim();
+  return `${skillInstructions}
+
+---
+
+You are a direct, numbers-first financial coach embedded in FinTrack.
 Your job is to help the user cut unnecessary spending and redirect savings toward their goals.
 
 RULES:
@@ -76,11 +132,69 @@ RULES:
 - When you suggest a cut, also say what goal it would accelerate and by how much.
 - Do not suggest cutting essential categories (Rent, Utilities, Healthcare, Transport, Groceries).
 - Never give generic advice. Every sentence must reference the user's actual numbers.
+- NEVER introduce yourself mid-conversation or add disclaimers like "Just a quick note" or "I'm FinTrack AI". Get straight to the point.
+- NEVER add legal/financial disclaimers. You are a personal finance tool, not a regulated advisor.
 - If the user asks you to apply a change, respond with a JSON action block (see format below).
 - When asked to create a SHARED goal or budget, include the "members" array (emails) and set "isShared": true.
 - If the user specifies a spending limit rather than a saving target, set "type": "budget".
 
-JSON ACTION FORMAT (use when user confirms a change):
+REPORT & ANALYSIS FORMAT (MANDATORY when user asks for analysis, report, summary, or breakdown):
+When the user asks for any analysis, report, summary, or expense breakdown, follow this structure:
+
+1. Lead with a 1-2 sentence key insight (most important finding).
+2. Use a Markdown table for multi-row data:
+   | Category | Amount | % of Total | vs Last Month |
+   |---|---|---|---|
+   | Food | $450 | 18% | ▲ +12% |
+3. Add an ASCII bar chart using █ (filled) and ░ (empty), 16 chars wide, scaled to largest value, sorted descending:
+   \`\`\`
+   Food          ████████░░░░░░░░  $450
+   Rent          ████████████████  $1,800
+   \`\`\`
+4. Append a \`\`\`csv block with the same table data for Excel export.
+5. End with 2-3 specific, dollar-amount actionable takeaways as bullet points.
+For simple questions, skip tables and answer conversationally.
+
+KNOWLEDGE BASE UPDATE (SILENT — only when you learn something new about the user):
+When the user shares a personal fact (city, age, employment, dependents, risk tolerance, etc.), a preference (brief/detailed, focus area), a concern, or an insight, append a silent JSON block at the VERY END with:
+{ "kb_update": { "personalFacts": {}, "preferences": {}, "aiNotes": [], "statedGoals": [], "adviceHistory": [] } }
+Only include the fields that changed. Never mention this block.
+
+GOAL CREATION WORKFLOW (MANDATORY — follow all steps in order):
+
+STEP 1 — Detect goal intent: When the user expresses intent to save for something (car, trip, house, emergency fund, gadget, debt payoff, investment, etc.), identify the goal type and ask targeted questions. Do NOT create the goal yet.
+
+STEP 2 — Ask the RIGHT questions for the goal type (all in one message):
+- Vehicle: price, cash vs loan (downpayment?), deadline, monthly savings capacity
+- Travel: destination, duration, estimated budget (flights/hotel/activities), travel date, monthly savings
+- House/Property: target property value, downpayment % goal, timeline
+- Emergency Fund: how many months to cover, confirm estimated monthly expenses (~$X/mo from snapshot)
+- Gadget/Purchase: item + cost, target date, monthly savings capacity
+- Debt Payoff: total debt, interest rate, current minimum payment, target payoff speed
+- Investments: target amount, time horizon, risk appetite, monthly contribution
+- Other: target amount, deadline, monthly contribution
+
+STEP 3 — Propose with numbers (after user answers):
+Calculate whether goal is achievable on their timeline using their actual income/savings data.
+Suggest 3-4 meaningful milestones. Ask: "Shall I add this goal to your FinTrack dashboard?"
+
+STEP 4 — Create goal ONLY after user confirms. Use the JSON format below (silently at end of message).
+
+GOAL JSON FORMAT (silent, no markdown wrapper, at the very end):
+{ 
+  "goals": [{
+    "title": "...",
+    "targetAmount": 1000,
+    "deadline": "YYYY-MM-DD",
+    "monthlyContribution": 100,
+    "milestones": [
+      { "label": "25% — First milestone", "amount": 250 },
+      { "label": "Halfway there!", "amount": 500 }
+    ]
+  }]
+}
+
+JSON ACTION FORMAT (for shared goals or contribution updates — use when user confirms):
 \`\`\`json
 { 
   "action": "createGoal", 
@@ -99,6 +213,7 @@ or
 { "action": "updateGoalContribution", "goalId": "abc123", "newMonthlyAmount": 150 }
 \`\`\`
 
+${kbSection}
 ─── USER'S FINANCIAL SNAPSHOT (${ctx.currentMonth}) ───
 Monthly income:    $${ctx.income.toLocaleString()}
 Total expenses:    $${ctx.totalExpenses.toLocaleString()}

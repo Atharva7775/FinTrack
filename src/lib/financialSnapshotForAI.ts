@@ -17,6 +17,7 @@ export interface FinancialSnapshotForAI {
   viewMode: "personal" | "splitwise";
   savingsBalance: number;
   splitwiseBalances: { owe: number; owed: number } | null;
+  /** Most recent month that has actual transaction data (YYYY-MM). */
   currentMonthKey: string;
   previousMonthKey: string;
   currentMonth: {
@@ -36,6 +37,14 @@ export interface FinancialSnapshotForAI {
     recommendedBudget503020: { needs: number; wants: number; savings: number };
     topExpenseCategoriesThisMonth: { category: string; amount: number }[];
   };
+  /** Per-month breakdown for ALL months that have data — lets the AI answer historical questions. */
+  monthlyBreakdowns: {
+    month: string;
+    income: number;
+    expenses: number;
+    net: number;
+    topCategories: { category: string; amount: number }[];
+  }[];
   goals: {
     id: string;
     title: string;
@@ -79,8 +88,15 @@ export function buildFinancialSnapshotForAI(params: {
   const { transactions: allTx, goals, savingsBalance, viewMode, splitwiseBalances } = params;
   const transactions = filterTransactionsForView(allTx, viewMode);
 
-  const currentMonthKey = getCurrentMonthKey();
-  const previousMonthKey = getPrevMonthKey();
+  // Use the most recent month that actually has data, not the real calendar month.
+  // This prevents the AI from seeing an empty "current month" when the user hasn't
+  // added transactions yet for the actual current calendar month.
+  const allMonthsWithData = Array.from(
+    new Set(transactions.map((t) => t.date.slice(0, 7)))
+  ).sort().reverse();
+
+  const currentMonthKey = allMonthsWithData[0] || getCurrentMonthKey();
+  const previousMonthKey = allMonthsWithData[1] || getPrevMonthKey();
 
   const current = transactions.filter((t) => t.date.startsWith(currentMonthKey));
   const previous = transactions.filter((t) => t.date.startsWith(previousMonthKey));
@@ -117,6 +133,22 @@ export function buildFinancialSnapshotForAI(params: {
   const sortedTx = [...transactions].sort((a, b) => a.date.localeCompare(b.date));
   const recent = sortedTx.slice(-MAX_RECENT);
 
+  // Build a per-month breakdown for every month that has data.
+  const monthlyBreakdowns = allMonthsWithData.map((month) => {
+    const mTx = transactions.filter((t) => t.date.startsWith(month));
+    const mIncome = mTx.filter((t) => t.type === "income").reduce((s, t) => s + txAmount(t), 0);
+    const mExpenses = mTx.filter((t) => t.type === "expense").reduce((s, t) => s + txAmount(t), 0);
+    const mCatSpend: Record<string, number> = {};
+    mTx.filter((t) => t.type === "expense").forEach((t) => {
+      mCatSpend[t.category] = (mCatSpend[t.category] || 0) + txAmount(t);
+    });
+    const topCategories = Object.entries(mCatSpend)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([category, amount]) => ({ category, amount }));
+    return { month, income: mIncome, expenses: mExpenses, net: mIncome - mExpenses, topCategories };
+  });
+
   return {
     viewMode,
     savingsBalance,
@@ -144,6 +176,7 @@ export function buildFinancialSnapshotForAI(params: {
       },
       topExpenseCategoriesThisMonth,
     },
+    monthlyBreakdowns,
     goals: goals.map((g) => ({
       id: g.id,
       title: g.title,

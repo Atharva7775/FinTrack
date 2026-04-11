@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "financial-operations-expert": {
+      "source": "shipshitdev/library",
+      "sourceType": "github",
+      "computedHash": "28ee8b9317bcd1354880b5455919462b2f95c2df5a32aa568ff97a59bc821977"
+    }
+  }
+}

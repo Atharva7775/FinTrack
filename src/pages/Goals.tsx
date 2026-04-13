@@ -1,15 +1,20 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, Trash2, Target, Wallet, Zap, LogIn } from "lucide-react";
-import { useFinanceStore, type Goal, type GoalMilestone } from "@/store/financeStore";
+import { Plus, Trash2, Target, Wallet, Zap, LogIn, PiggyBank, Settings2, TrendingUp } from "lucide-react";
+import { useFinanceStore, type Goal, type GoalMilestone, selectBudgetStatuses, type Budget, type BudgetStatus } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
+import { useBudgetAlerts } from "@/hooks/useBudgetAlerts";
 import { CursorTooltip } from "@/components/CursorTooltip";
+import { BudgetSetupWizard } from "@/components/BudgetSetupWizard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getCurrentMonthKey } from "@/lib/utils";
 import { GoalOptimizerModal } from "@/components/GoalOptimizerModal";
+import { saveBudget, deleteBudgetRow } from "@/lib/supabaseSync";
+import { toast } from "sonner";
 
 const container = {
   hidden: { opacity: 0 },
@@ -20,11 +25,12 @@ const item = {
   show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
-function CircularProgress({ percent, size = 100 }: { percent: number; size?: number }) {
+function CircularProgress({ percent, size = 100, color }: { percent: number; size?: number; color?: string }) {
   const stroke = 8;
   const radius = (size - stroke) / 2;
   const circ = 2 * Math.PI * radius;
   const offset = circ - (Math.min(percent, 100) / 100) * circ;
+  const strokeColor = color ?? "hsl(var(--primary))";
 
   return (
     <svg width={size} height={size} className="transform -rotate-90">
@@ -34,7 +40,7 @@ function CircularProgress({ percent, size = 100 }: { percent: number; size?: num
         cy={size / 2}
         r={radius}
         fill="none"
-        stroke="hsl(var(--primary))"
+        stroke={strokeColor}
         strokeWidth={stroke}
         strokeLinecap="round"
         strokeDasharray={circ}
@@ -95,25 +101,103 @@ function contributionThisMonth(goal: Goal): number {
   return (goal.contributions || []).filter((c) => c.date.startsWith(currentMonth)).reduce((s, c) => s + c.amount, 0);
 }
 
+// ─── Budget status helpers ─────────────────────────────────────────────────────
+function statusColor(status: BudgetStatus["status"]) {
+  if (status === "exceeded") return "hsl(0,72%,55%)";
+  if (status === "danger") return "hsl(24,95%,55%)";
+  if (status === "warning") return "hsl(38,92%,50%)";
+  return "hsl(142,52%,42%)";
+}
+
+function statusBadge(status: BudgetStatus["status"]) {
+  if (status === "exceeded") return <Badge variant="destructive" className="text-xs">Over budget</Badge>;
+  if (status === "danger") return <Badge className="bg-orange-500 text-white text-xs">Danger zone</Badge>;
+  if (status === "warning") return <Badge className="bg-yellow-500 text-black text-xs">Warning</Badge>;
+  return <Badge variant="secondary" className="text-xs text-green-600 bg-green-500/10">On track</Badge>;
+}
+
+// ─── Budget edit dialog ────────────────────────────────────────────────────────
+interface EditBudgetDialogProps {
+  budget: Budget | null;
+  onClose: () => void;
+  onSave: (updated: Budget) => void;
+}
+function EditBudgetDialog({ budget, onClose, onSave }: EditBudgetDialogProps) {
+  const [form, setForm] = useState({
+    type: budget?.type ?? ("percentage" as Budget["type"]),
+    percentage: budget?.percentage ?? 0,
+    fixedAmount: budget?.fixedAmount ?? 0,
+    alertThreshold: budget?.alertThreshold ?? 80,
+  });
+  if (!budget) return null;
+  return (
+    <Dialog open={!!budget} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit {budget.category} Budget</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 pt-2">
+          <div className="flex gap-2">
+            <Button variant={form.type === "percentage" ? "default" : "outline"} className="flex-1" onClick={() => setForm((f) => ({ ...f, type: "percentage" }))}>% of income</Button>
+            <Button variant={form.type === "fixed" ? "default" : "outline"} className="flex-1" onClick={() => setForm((f) => ({ ...f, type: "fixed" }))}>Fixed $</Button>
+          </div>
+          {form.type === "percentage" ? (
+            <div>
+              <Label>Percentage of monthly income</Label>
+              <div className="flex items-center gap-2 mt-1">
+                <Input type="number" min={0} max={100} value={form.percentage} onChange={(e) => setForm((f) => ({ ...f, percentage: Number(e.target.value) }))} />
+                <span className="text-sm text-muted-foreground">%</span>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <Label>Fixed amount per month ($)</Label>
+              <Input type="number" min={0} value={form.fixedAmount} onChange={(e) => setForm((f) => ({ ...f, fixedAmount: Number(e.target.value) }))} className="mt-1" />
+            </div>
+          )}
+          <div>
+            <Label>Alert when usage reaches (%)</Label>
+            <div className="flex items-center gap-2 mt-1">
+              <Input type="number" min={50} max={99} value={form.alertThreshold} onChange={(e) => setForm((f) => ({ ...f, alertThreshold: Number(e.target.value) }))} />
+              <span className="text-sm text-muted-foreground">%</span>
+            </div>
+          </div>
+          <Button className="w-full" onClick={() => onSave({ ...budget, ...form })}>Save Changes</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 export default function Goals() {
-  const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution } = useFinanceStore();
+  const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution, budgets, deleteBudget, hasBudgetSetup, transactions } = useFinanceStore();
   const { user, isLoading: authLoading } = useAuth();
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ 
-    title: "", 
-    targetAmount: "", 
-    currentAmount: "0", 
-    deadline: new Date(new Date().getFullYear(), new Date().getMonth() + 6, 1).toISOString().slice(0,10), 
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [editBudget, setEditBudget] = useState<Budget | null>(null);
+  const [form, setForm] = useState({
+    title: "",
+    targetAmount: "",
+    currentAmount: "0",
+    deadline: new Date(new Date().getFullYear(), new Date().getMonth() + 6, 1).toISOString().slice(0, 10),
     monthlyContribution: "",
-    type: 'savings' as 'savings' | 'budget',
     isShared: false,
-    members: ""
+    members: "",
   });
   const [contributionGoalId, setContributionGoalId] = useState<string | null>(null);
   const [contributionAmount, setContributionAmount] = useState("");
   const [contributionDate, setContributionDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [optimizerGoalId, setOptimizerGoalId] = useState<string | null>(null);
   const currentMonth = getCurrentMonthKey();
+
+  useBudgetAlerts();
+
+  const rawMonthlyIncome = transactions
+    .filter(t => t.type === 'income' && t.date.startsWith(currentMonth))
+    .reduce((sum, t) => sum + t.amount, 0);
+  const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
+  const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
+
+  const budgetStatuses = selectBudgetStatuses(budgets, transactions, monthlyIncome, currentMonth);
 
   if (!authLoading && !user) {
     return (
@@ -134,30 +218,10 @@ export default function Goals() {
     const current = parseFloat(form.currentAmount) || 0;
     const monthly = parseFloat(form.monthlyContribution) || 0;
     if (!form.title || !target) return;
-    
     const membersList = form.members.split(',').map(m => m.trim()).filter(m => m.includes('@')).map(email => ({ email, status: 'invited' as const }));
-
-    addGoal({ 
-      title: form.title, 
-      targetAmount: target, 
-      currentAmount: current, 
-      deadline: form.deadline, 
-      monthlyContribution: monthly,
-      type: form.type,
-      isShared: form.isShared,
-      members: membersList
-    });
+    addGoal({ title: form.title, targetAmount: target, currentAmount: current, deadline: form.deadline, monthlyContribution: monthly, type: 'savings', isShared: form.isShared, members: membersList });
     setOpen(false);
-    setForm({ 
-      title: "", 
-      targetAmount: "", 
-      currentAmount: "0", 
-      deadline: new Date(new Date().getFullYear(), new Date().getMonth() + 6, 1).toISOString().slice(0,10), 
-      monthlyContribution: "",
-      type: 'savings',
-      isShared: false,
-      members: ""
-    });
+    setForm({ title: "", targetAmount: "", currentAmount: "0", deadline: new Date(new Date().getFullYear(), new Date().getMonth() + 6, 1).toISOString().slice(0, 10), monthlyContribution: "", isShared: false, members: "" });
   };
 
   const handleRecordContribution = () => {
@@ -173,50 +237,119 @@ export default function Goals() {
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Goals & Budgets</h1>
-          <p className="text-muted-foreground text-sm mt-1">Track savings targets and shared monthly budgets</p>
+          <h1 className="text-2xl lg:text-3xl font-display font-bold text-foreground">Budget & Goals</h1>
+          <p className="text-muted-foreground text-sm mt-1">Manage your monthly spending budgets and savings targets</p>
         </div>
         <div className="flex gap-2">
-          <CursorTooltip content="Create a new savings goal (e.g. emergency fund, vacation).">
-            <Button onClick={() => { setForm(f => ({ ...f, type: 'savings' })); setOpen(true); }} className="gap-2">
-              <Plus className="h-4 w-4" /> New Goal
+          <CursorTooltip content={hasBudgetSetup ? "Reconfigure your monthly budgets." : "Set up your monthly spending budgets with a guided wizard."}>
+            <Button variant={hasBudgetSetup ? "outline" : "default"} onClick={() => setWizardOpen(true)} className="gap-2">
+              <PiggyBank className="h-4 w-4" /> {hasBudgetSetup ? "Edit Budgets" : "Set Up Budgets"}
             </Button>
           </CursorTooltip>
-          <CursorTooltip content="Create a new monthly spending budget (e.g. food limit, shopping cap).">
-            <Button variant="outline" onClick={() => { setForm(f => ({ ...f, type: 'budget' })); setOpen(true); }} className="gap-2 border-primary/20 hover:border-primary/50 text-primary">
-              <Plus className="h-4 w-4" /> New Budget
+          <CursorTooltip content="Create a new savings goal (e.g. emergency fund, vacation).">
+            <Button variant="outline" onClick={() => setOpen(true)} className="gap-2">
+              <Plus className="h-4 w-4" /> New Goal
             </Button>
           </CursorTooltip>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        {goals.map((goal) => {
-          const percent = (goal.currentAmount / goal.targetAmount) * 100;
-          const remaining = goal.targetAmount - goal.currentAmount;
-          const monthsLeft = goal.monthlyContribution > 0 ? Math.ceil(remaining / goal.monthlyContribution) : null;
-
-          return (
-            <motion.div key={goal.id} variants={item} className="glass-card rounded-2xl p-6">
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-xl ${goal.type === 'budget' ? 'bg-orange-500/10' : 'bg-savings-muted'}`}>
-                    {goal.type === 'budget' ? <Wallet className="h-5 w-5 text-orange-500" /> : <Target className="h-5 w-5 text-savings" />}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-display font-semibold text-foreground">{goal.title}</h3>
-                      {goal.isShared && (
-                        <span className="text-[10px] font-bold bg-primary/10 text-primary px-1.5 py-0.5 rounded uppercase tracking-wider">Shared</span>
-                      )}
+      {/* Section A: Monthly Budgets */}
+      {hasBudgetSetup && budgetStatuses.length > 0 ? (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-display font-semibold text-foreground flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-primary" /> Monthly Budgets
+            </h2>
+            <span className="text-xs text-muted-foreground">{currentMonth}</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {budgetStatuses.map((bs) => {
+              const budget = budgets.find(b => b.category === bs.category)!;
+              return (
+                <motion.div key={bs.category} variants={item} className="glass-card rounded-2xl p-5">
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-display font-semibold text-foreground">{bs.category}</span>
+                        {statusBadge(bs.status)}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">${bs.spent.toFixed(0)} / ${bs.limitAmount.toFixed(0)}</p>
                     </div>
-                    <p className="text-xs text-muted-foreground">{goal.type === 'budget' ? 'Spending Limit' : 'Savings Target'} • {goal.deadline}</p>
+                    <div className="flex gap-1">
+                      <button onClick={() => setEditBudget(budget)} className="p-1.5 rounded-lg hover:bg-accent transition-colors">
+                        <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
+                      </button>
+                      <button onClick={() => { deleteBudget(budget.id); toast.success(`Removed ${bs.category} budget`); }} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
+                        <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <CursorTooltip content="Delete this goal permanently. Progress is not recovered.">
-                  <button onClick={() => deleteGoal(goal.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
-                    <Trash2 className="h-4 w-4 text-muted-foreground" />
-                  </button>
+                  <div className="w-full h-2 rounded-full bg-muted overflow-hidden mb-2">
+                    <div
+                      className={`h-full rounded-full transition-all ${statusColor(bs.status)}`}
+                      style={{ width: `${Math.min(bs.percentageUsed, 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>${bs.remaining.toFixed(0)} left</span>
+                    <span>{bs.percentageUsed.toFixed(0)}% used</span>
+                  </div>
+                  {budget.rolloverBalance !== 0 && (
+                    <p className="text-xs mt-2 text-primary/70">
+                      {budget.rolloverBalance > 0 ? `+$${budget.rolloverBalance.toFixed(0)} rollover from last month` : `$${Math.abs(budget.rolloverBalance).toFixed(0)} overspend carried forward`}
+                    </p>
+                  )}
+                </motion.div>
+              );
+            })}
+          </div>
+        </div>
+      ) : !hasBudgetSetup ? (
+        <div className="glass-card rounded-2xl p-8 flex flex-col items-center gap-4 text-center border-dashed border-2 border-primary/20">
+          <PiggyBank className="h-12 w-12 text-primary/40" />
+          <div>
+            <h3 className="font-display font-semibold text-foreground">No budget set up yet</h3>
+            <p className="text-sm text-muted-foreground mt-1 max-w-xs">Set up category budgets to track your spending and get smart alerts.</p>
+          </div>
+          <Button onClick={() => setWizardOpen(true)} className="gap-2">
+            <PiggyBank className="h-4 w-4" /> Set Up Budgets
+          </Button>
+        </div>
+      ) : null}
+
+      {/* Section B: Savings Goals */}
+      <div className="space-y-4">
+        <h2 className="text-lg font-display font-semibold text-foreground flex items-center gap-2">
+          <Target className="h-5 w-5 text-savings" /> Savings Goals
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {goals.filter(g => g.type !== 'budget').map((goal) => {
+            const percent = (goal.currentAmount / goal.targetAmount) * 100;
+            const remaining = goal.targetAmount - goal.currentAmount;
+            const monthsLeft = goal.monthlyContribution > 0 ? Math.ceil(remaining / goal.monthlyContribution) : null;
+
+            return (
+              <motion.div key={goal.id} variants={item} className="glass-card rounded-2xl p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-xl bg-savings-muted">
+                      <Target className="h-5 w-5 text-savings" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-display font-semibold text-foreground">{goal.title}</h3>
+                        {goal.isShared && (
+                          <span className="text-[10px] font-bold bg-primary/10 text-primary px-1.5 py-0.5 rounded uppercase tracking-wider">Shared</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">Savings Target • {goal.deadline}</p>
+                    </div>
+                  </div>
+                  <CursorTooltip content="Delete this goal permanently. Progress is not recovered.">
+                    <button onClick={() => deleteGoal(goal.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
+                      <Trash2 className="h-4 w-4 text-muted-foreground" />
+                    </button>
                 </CursorTooltip>
               </div>
 
@@ -228,7 +361,7 @@ export default function Goals() {
                   </div>
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm text-muted-foreground">{goal.type === 'budget' ? 'Limit spent' : 'Saved'}</p>
+                  <p className="text-sm text-muted-foreground">Saved</p>
                   <p className="text-xl font-display font-bold text-foreground">${goal.currentAmount.toLocaleString()}</p>
                   <p className="text-xs text-muted-foreground">of ${goal.targetAmount.toLocaleString()}</p>
                 </div>
@@ -303,8 +436,16 @@ export default function Goals() {
                 </div>
               </CursorTooltip>
             </motion.div>
-          );
-        })}
+            );
+          })}
+          {goals.filter(g => g.type !== 'budget').length === 0 && (
+            <div className="col-span-full flex flex-col items-center justify-center p-12 glass-card rounded-2xl border-dashed border-2 border-border gap-3 text-center">
+              <Target className="h-10 w-10 text-muted-foreground/40" />
+              <p className="text-muted-foreground">No savings goals yet. Create one to start tracking your targets.</p>
+              <Button onClick={() => setOpen(true)} className="gap-2"><Plus className="h-4 w-4" /> New Goal</Button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Record contribution dialog */}
@@ -335,35 +476,26 @@ export default function Goals() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="font-display">Create {form.type === 'budget' ? 'Spending Budget' : 'Savings Goal'}</DialogTitle>
+            <DialogTitle className="font-display">New Savings Goal</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-2">
-            <CursorTooltip content="A short name for your goal or budget (e.g. Wedding Savings, Dining Limit).">
+            <CursorTooltip content="A short name for your goal (e.g. Emergency Fund, Vacation).">
               <div><Label>Title</Label><Input placeholder="e.g., Emergency Fund" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
             </CursorTooltip>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Type</Label>
-                <div className="flex gap-2">
-                  <Button variant={form.type === 'savings' ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, type: 'savings' })}>Savings</Button>
-                  <Button variant={form.type === 'budget' ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, type: 'budget' })}>Budget</Button>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Visibility</Label>
-                <div className="flex gap-2">
-                  <Button variant={!form.isShared ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, isShared: false })}>Personal</Button>
-                  <Button variant={form.isShared ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, isShared: true })}>Shared</Button>
-                </div>
+
+            <div>
+              <Label>Visibility</Label>
+              <div className="flex gap-2 mt-1.5">
+                <Button variant={!form.isShared ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, isShared: false })}>Personal</Button>
+                <Button variant={form.isShared ? 'default' : 'outline'} className="flex-1" onClick={() => setForm({ ...form, isShared: true })}>Shared</Button>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <CursorTooltip content="Total amount to save OR monthly spending limit.">
+              <CursorTooltip content="Total amount you want to save.">
                 <div><Label>Target Amount</Label><Input type="number" placeholder="10000" value={form.targetAmount} onChange={(e) => setForm({ ...form, targetAmount: e.target.value })} /></div>
               </CursorTooltip>
-              <CursorTooltip content="Target date or budget expiry.">
+              <CursorTooltip content="Target date to reach this goal.">
                 <div><Label>Deadline</Label><Input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} /></div>
               </CursorTooltip>
             </div>
@@ -387,11 +519,14 @@ export default function Goals() {
             )}
 
             <CursorTooltip content="Save this goal and add it to your list.">
-              <Button onClick={handleSubmit} className="w-full h-12 text-lg font-display">Create {form.type === 'budget' ? 'Budget' : 'Goal'}</Button>
+              <Button onClick={handleSubmit} className="w-full h-12 text-lg font-display">Create Goal</Button>
             </CursorTooltip>
           </div>
         </DialogContent>
       </Dialog>
+
+      <BudgetSetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      {editBudget && <EditBudgetDialog budget={editBudget} onClose={() => setEditBudget(null)} />}
     </motion.div>
   );
 }

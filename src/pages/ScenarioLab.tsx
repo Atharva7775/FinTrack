@@ -20,6 +20,7 @@ import {
   Sheet,
 } from "lucide-react";
 import { useFinanceStore } from "@/store/financeStore";
+import { useChatStore } from "@/store/chatStore";
 import { useAuth } from "@/hooks/useAuth";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { buildFinancialContext, buildSystemPrompt } from "@/lib/aiContextBuilder";
@@ -254,6 +255,15 @@ export default function ScenarioLab() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, isLoading]);
+
+  // Consume pendingPrompt from chatStore (set by budget alert "Fix it" button)
+  useEffect(() => {
+    const { pendingPrompt, setPendingPrompt } = useChatStore.getState();
+    if (pendingPrompt) {
+      setInput(pendingPrompt);
+      setPendingPrompt(null);
+    }
+  }, []);
 
   // Load (or bootstrap) knowledge base when user is known
   useEffect(() => {

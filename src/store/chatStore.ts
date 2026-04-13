@@ -22,6 +22,9 @@ interface ChatStore {
   addMessage: (sessionId: string, message: ChatMessage) => void;
   renameSession: (id: string, name: string) => void;
   deleteSession: (id: string) => void;
+  /** Pre-filled prompt to inject into Scenario Lab when navigating from budget alerts */
+  pendingPrompt: string | null;
+  setPendingPrompt: (prompt: string | null) => void;
 }
 
 function generateId() {
@@ -31,6 +34,8 @@ function generateId() {
 export const useChatStore = create<ChatStore>((set, get) => ({
   sessions: [],
   activeSessionId: null,
+  pendingPrompt: null,
+  setPendingPrompt: (prompt) => set({ pendingPrompt: prompt }),
   createSession: (name = 'New Chat') => {
     const id = generateId();
     const session: ChatSession = {

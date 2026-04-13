@@ -4,7 +4,7 @@ import { useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   ArrowLeftRight,
-  Target,
+  PiggyBank,
   Lightbulb,
   Settings,
   TrendingUp,
@@ -19,13 +19,14 @@ import { useState, useEffect } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/useAuth";
-import { useFinanceStore } from "@/store/financeStore";
+import { useFinanceStore, selectBudgetStatuses } from "@/store/financeStore";
+import { getCurrentMonthKey } from "@/lib/utils";
 import { useRealtimeSync } from "@/hooks/useRealtimeSync";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard, tooltip: "View your monthly income, expenses, savings, and charts at a glance." },
   { title: "Transactions", url: "/transactions", icon: ArrowLeftRight, tooltip: "Add, edit, and delete income and expense entries. Filter by type." },
-  { title: "Goals", url: "/goals", icon: Target, tooltip: "Create and track savings goals with target amount, deadline, and monthly contribution." },
+  { title: "Budget & Goals", url: "/goals", icon: PiggyBank, tooltip: "Set up monthly spending budgets and track savings goals." },
   { title: "Insights", url: "/insights", icon: Lightbulb, tooltip: "See spending analysis, budget suggestions, and category trends." },
   { title: "Scenario Lab", url: "/scenario-lab", icon: FlaskConical, tooltip: "Simulate life decisions: project cash flow and compare baseline vs. scenario over 12 months." },
   { title: "Settings", url: "/settings", icon: Settings, tooltip: "Manage account and app preferences (coming soon)." },
@@ -101,7 +102,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () => void }) {
-  const { viewMode } = useFinanceStore();
+  const { viewMode, budgets, transactions, goals } = useFinanceStore();
+  const currentMonth = getCurrentMonthKey();
+  const rawMonthlyIncome = transactions
+    .filter(t => t.type === 'income' && t.date.startsWith(currentMonth))
+    .reduce((sum, t) => sum + t.amount, 0);
+  const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
+  const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
+  const redZoneCount = selectBudgetStatuses(budgets, transactions, monthlyIncome, currentMonth)
+    .filter(bs => bs.isInRedZone).length;
   const visibleNavItems = navItems.filter(item => 
     viewMode === "splitwise" ? item.title !== "Insights" : true
   );
@@ -141,8 +150,11 @@ function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () 
                 }`}
                 activeClassName=""
               >
-                <div className={`p-1.5 rounded-lg transition-colors ${isActive ? "bg-primary/20" : "bg-transparent group-hover:bg-muted"}`}>
+                <div className={`relative p-1.5 rounded-lg transition-colors ${isActive ? "bg-primary/20" : "bg-transparent group-hover:bg-muted"}`}>
                   <item.icon className="h-4.5 w-4.5 flex-shrink-0" />
+                  {item.url === "/goals" && redZoneCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-destructive" />
+                  )}
                 </div>
                 <span>{item.title}</span>
               </NavLink>

@@ -1,5 +1,5 @@
 import { getSupabase } from "./supabase";
-import type { Transaction, Goal, GoalContribution, HydratePayload } from "@/store/financeStore";
+import type { Transaction, Goal, GoalContribution, HydratePayload, Budget } from "@/store/financeStore";
 
 const SETTINGS_KEYS = {
   savings: 'savings_balance',
@@ -7,6 +7,7 @@ const SETTINGS_KEYS = {
   swSync: 'splitwise_last_sync',
   viewMode: 'view_mode',
   swBal: 'splitwise_balances',
+  budgetSplit: 'budget_split',
 } as const;
 
 /** Fetch all data from Supabase and return in app shape. */
@@ -15,17 +16,17 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
   if (!supabase) return null;
 
   try {
-    const [txRes, goalsRes, contribRes, settingsRes] = await Promise.all([
+    const [txRes, goalsRes, contribRes, settingsRes, budgetsRes] = await Promise.all([
       supabase.from("transactions").select("id, type, amount, category, date, note, is_splitwise, splitwise_id, original_currency, original_amount, usd_amount, is_pending").eq("user_email", userEmail).order("date", { ascending: false }),
       supabase.from("goals").select("id, title, target_amount, current_amount, deadline, monthly_contribution").eq("user_email", userEmail).order("created_at", { ascending: true }),
       supabase.from("goal_contributions").select("goal_id, amount, date").order("date", { ascending: false }),
       supabase.from("app_settings").select("key, value").in("key", Object.values(SETTINGS_KEYS)).eq("user_email", userEmail),
+      supabase.from("budgets").select("id, category, type, percentage, fixed_amount, rollover_balance, alert_threshold").eq("user_email", userEmail).order("created_at", { ascending: true }),
     ]);
 
     if (txRes.error) throw txRes.error;
     if (goalsRes.error) throw goalsRes.error;
     if (contribRes.error) throw contribRes.error;
-
     const transactions: Transaction[] = (txRes.data || []).map((r) => ({
       id: r.id,
       type: r.type as Transaction["type"],
@@ -72,7 +73,23 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
       if (row.key === SETTINGS_KEYS.viewMode && row.value != null) viewMode = String(row.value) as "personal" | "splitwise";
     });
 
-    return { transactions, goals, savingsBalance, splitwiseKey, splitwiseLastSync, splitwiseBalances, viewMode };
+    let budgetSplit: [number, number, number] = [50, 30, 20];
+    const budgetRow = (settingsRes.data || []).find(r => r.key === SETTINGS_KEYS.budgetSplit);
+    if (budgetRow?.value && Array.isArray(budgetRow.value) && budgetRow.value.length === 3) {
+      budgetSplit = budgetRow.value as [number, number, number];
+    }
+
+    const budgets: Budget[] = (budgetsRes.data || []).map((r) => ({
+      id: r.id,
+      category: r.category as Budget['category'],
+      type: r.type as Budget['type'],
+      percentage: r.percentage != null ? Number(r.percentage) : undefined,
+      fixedAmount: r.fixed_amount != null ? Number(r.fixed_amount) : undefined,
+      rolloverBalance: Number(r.rollover_balance ?? 0),
+      alertThreshold: Number(r.alert_threshold ?? 80),
+    }));
+
+    return { transactions, goals, savingsBalance, splitwiseKey, splitwiseLastSync, splitwiseBalances, viewMode, budgetSplit, budgets };
   } catch (e) {
     console.error("FinTrack: failed to fetch from Supabase", e);
     return null;
@@ -170,6 +187,9 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
     if (payload.splitwiseBalances !== undefined && payload.splitwiseBalances !== null) {
       settingsRows.push({ key: SETTINGS_KEYS.swBal, user_email: userEmail, value: payload.splitwiseBalances, updated_at: now });
     }
+    if (payload.budgetSplit !== undefined) {
+      settingsRows.push({ key: SETTINGS_KEYS.budgetSplit, user_email: userEmail, value: payload.budgetSplit, updated_at: now });
+    }
     const { error: settingsError } = await supabase.from("app_settings").upsert(
       settingsRows,
       { onConflict: "key,user_email" }
@@ -180,5 +200,104 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
   } catch (e) {
     console.error("FinTrack: failed to persist to Supabase", e);
     return false;
+  }
+}
+
+/** Check if this user has already completed onboarding. Returns false if no record exists. */
+export async function fetchOnboardingStatus(userEmail: string): Promise<boolean> {
+  const supabase = getSupabase();
+  if (!supabase) return false;
+  try {
+    const { data } = await supabase
+      .from("user_onboarding")
+      .select("has_onboarded")
+      .eq("user_email", userEmail)
+      .maybeSingle();
+    return data?.has_onboarded === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Mark onboarding as completed for this user. */
+export async function completeOnboarding(userEmail: string): Promise<void> {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  try {
+    await supabase.from("user_onboarding").upsert(
+      { user_email: userEmail, has_onboarded: true, completed_at: new Date().toISOString() },
+      { onConflict: "user_email" }
+    );
+  } catch (e) {
+    console.error("FinTrack: failed to save onboarding status", e);
+  }
+}
+
+/** Upsert a single budget row for this user. Returns the saved budget (with server-generated id if new). */
+export async function saveBudget(userEmail: string, budget: Budget): Promise<Budget | null> {
+  const supabase = getSupabase();
+  if (!supabase) return null;
+  try {
+    const row = {
+      id: budget.id,
+      user_email: userEmail,
+      category: budget.category,
+      type: budget.type,
+      percentage: budget.percentage ?? null,
+      fixed_amount: budget.fixedAmount ?? null,
+      rollover_balance: budget.rolloverBalance,
+      alert_threshold: budget.alertThreshold,
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await supabase
+      .from("budgets")
+      .upsert(row, { onConflict: "user_email,category" })
+      .select("id, category, type, percentage, fixed_amount, rollover_balance, alert_threshold")
+      .single();
+    if (error) throw error;
+    return {
+      id: data.id,
+      category: data.category as Budget['category'],
+      type: data.type as Budget['type'],
+      percentage: data.percentage != null ? Number(data.percentage) : undefined,
+      fixedAmount: data.fixed_amount != null ? Number(data.fixed_amount) : undefined,
+      rolloverBalance: Number(data.rollover_balance ?? 0),
+      alertThreshold: Number(data.alert_threshold ?? 80),
+    };
+  } catch (e) {
+    console.error("FinTrack: failed to save budget", e);
+    return null;
+  }
+}
+
+/** Delete a budget row by id. */
+export async function deleteBudgetRow(budgetId: string): Promise<void> {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  try {
+    await supabase.from("budgets").delete().eq("id", budgetId);
+  } catch (e) {
+    console.error("FinTrack: failed to delete budget", e);
+  }
+}
+
+/** Save a monthly budget snapshot (called when a month closes). */
+export async function saveBudgetSnapshot(
+  userEmail: string,
+  category: string,
+  month: string,
+  limitAmount: number,
+  spent: number,
+  rolloverToNext: number
+): Promise<void> {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  try {
+    await supabase.from("budget_month_snapshots").upsert(
+      { user_email: userEmail, category, month, limit_amount: limitAmount, spent, rollover_to_next: rolloverToNext },
+      { onConflict: "user_email,category,month" }
+    );
+  } catch (e) {
+    console.error("FinTrack: failed to save budget snapshot", e);
   }
 }

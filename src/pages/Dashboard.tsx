@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { motion } from "framer-motion";
-import { TrendingUp, TrendingDown, DollarSign, PiggyBank, Info, ChevronLeft, ChevronRight, Sparkles, User, Calendar } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, PiggyBank, Info, ChevronLeft, ChevronRight, Sparkles, User, Calendar, AlertTriangle } from "lucide-react";
+import { Link } from "react-router-dom";
 import AnimatedCounter from "@/components/AnimatedCounter";
 import { CursorTooltip } from "@/components/CursorTooltip";
-import { useFinanceStore } from "@/store/financeStore";
+import { useFinanceStore, selectBudgetStatuses } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
 import { getCurrentMonthKey, getMonthLabel, getAvailableMonthKeys, getLastNMonthsEndingAt } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,7 @@ function getTimeBasedGreeting() {
 }
 
 export default function Dashboard() {
-  const { transactions: allTx, viewMode, splitwiseBalances } = useFinanceStore();
+  const { transactions: allTx, viewMode, splitwiseBalances, budgets, goals } = useFinanceStore();
   const { user } = useAuth();
   
   const transactions = useMemo(
@@ -44,6 +45,13 @@ export default function Dashboard() {
   );
 
   const currentKey = getCurrentMonthKey();
+  const rawMonthlyIncome = transactions
+    .filter(t => t.type === 'income' && t.date.startsWith(currentKey))
+    .reduce((sum, t) => sum + t.amount, 0);
+  const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
+  const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
+  const alertBudgets = selectBudgetStatuses(budgets, transactions, monthlyIncome, currentKey)
+    .filter(bs => bs.status === 'warning' || bs.status === 'danger' || bs.status === 'exceeded');
   const defaultMonth = availableMonths.includes(currentKey) ? currentKey : availableMonths[availableMonths.length - 1] ?? currentKey;
   const [selectedMonthKey, setSelectedMonthKey] = useState(defaultMonth);
 
@@ -159,6 +167,31 @@ export default function Dashboard() {
           description="Efficiency of your saving"
         />
       </div>
+
+      {/* Budget Alert Widget */}
+      {alertBudgets.length > 0 && (
+        <motion.div variants={item} className="glass-card rounded-2xl p-4 border border-destructive/20 bg-destructive/5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-destructive" />
+              <span className="text-sm font-display font-semibold text-foreground">Budget Alerts</span>
+            </div>
+            <Link to="/goals" className="text-xs text-primary hover:underline">View budgets →</Link>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {alertBudgets.map(bs => (
+              <div key={bs.category} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium ${
+                bs.status === 'exceeded' ? 'bg-destructive/10 text-destructive' :
+                bs.status === 'danger' ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400' :
+                'bg-yellow-500/10 text-yellow-700 dark:text-yellow-400'
+              }`}>
+                <span>{bs.category}</span>
+                <span className="opacity-70">{bs.percentageUsed.toFixed(0)}% used</span>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      )}
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

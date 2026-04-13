@@ -13,11 +13,21 @@ interface TelegramUpdate {
   message?: TelegramMessage;
 }
 
+interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
 interface TelegramMessage {
   message_id: number;
   from: { id: number; first_name: string; username?: string };
   chat: { id: number };
   text?: string;
+  photo?: TelegramPhotoSize[];   // array ordered smallest → largest
+  caption?: string;              // optional caption sent with photo
   date: number;
 }
 
@@ -37,6 +47,14 @@ const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const TELEGRAM_WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")!;
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash";
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+
+// ─── Local date helpers (system timezone, not UTC) ────────────────────────────
+function localDate(d = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function localMonth(d = new Date()): string {
+  return localDate(d).slice(0, 7);
+}
 
 // ─── Supabase client (service role — can bypass RLS) ─────────────────────────
 
@@ -62,6 +80,104 @@ async function sendTyping(chatId: number): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, action: "typing" }),
   });
+}
+
+// ─── Photo download: Telegram file_id → base64 ───────────────────────────────
+
+async function downloadTelegramPhoto(fileId: string): Promise<{ base64: string; mimeType: string } | null> {
+  // Step 1: resolve file_path
+  const fileRes = await fetch(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
+  if (!fileRes.ok) return null;
+  const fileJson = await fileRes.json();
+  const filePath: string = fileJson?.result?.file_path;
+  if (!filePath) return null;
+
+  // Step 2: download the raw bytes
+  const imgRes = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`);
+  if (!imgRes.ok) return null;
+  const arrayBuffer = await imgRes.arrayBuffer();
+
+  // Step 3: base64 encode
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  const mimeType = ext === "png" ? "image/png" : "image/jpeg";
+  return { base64, mimeType };
+}
+
+// ─── Gemini Vision: receipt/bill OCR → transactions ──────────────────────────
+
+async function processReceiptImage(
+  imageBase64: string,
+  mimeType: string,
+  caption: string,
+  snapshot: Awaited<ReturnType<typeof buildFinancialSnapshot>>
+): Promise<string> {
+  const today = localDate();
+
+  const ocrPrompt = `You are FinTrack AI analyzing a receipt or bill image.
+Today's date: ${today}
+
+TASK: Extract all purchased items/charges from this receipt image and create transactions for them.
+
+CATEGORIES (use ONLY these, map items to the closest one):
+- Food          → restaurants, groceries, cafes, delivery, snacks, drinks
+- Travel        → hotels, accommodation, flights, transport, Uber, fuel
+- Entertainment → movies, games, events, concerts, clubs, leisure activities
+- Shopping      → clothes, electronics, non-food retail, Amazon orders
+- Utilities     → electricity, water, internet, phone bills
+- Healthcare    → pharmacy, doctors, medical supplies
+- Subscriptions → streaming, software, memberships
+- Rent          → rent payments, lease
+- Education     → courses, books, tuition
+- Savings       → savings deposits
+- Other         → anything else
+
+RULES:
+- Group similar small items into one transaction if they are clearly the same category (e.g., all food items on a restaurant bill → one Food transaction for the subtotal).
+- Keep distinct categories SEPARATE (e.g., a hotel bill with room + minibar + spa → Travel for room, Food for minibar, Entertainment for spa).
+- Use the total amount per category (before tip, unless tip is specified).
+- Use today's date (${today}) unless the receipt shows a different date — if so, use that date.
+- If there is a grand total and you can't distinguish items, create ONE transaction for the full amount in the most fitting category.
+- The user's caption (if any): "${caption}"
+
+OUTPUT FORMAT — respond with:
+1. A SHORT human-readable summary of what you found (1-3 lines).
+2. Then one JSON action block per transaction at the very END, each on its own line:
+{"action":"add_transaction","transaction":{"type":"expense","amount":25.50,"category":"Food","date":"${today}","note":"receipt item description"}}
+
+If you cannot read the image or it is not a receipt/bill, reply: "I couldn't read this as a receipt. Please send a clearer photo of the bill."`;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          role: "user",
+          parts: [
+            { inline_data: { mime_type: mimeType, data: imageBase64 } },
+            { text: ocrPrompt },
+          ],
+        }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.text();
+    console.error("Gemini Vision error:", err);
+    throw new Error(`Gemini Vision API failed: ${response.status}`);
+  }
+
+  const json = await response.json();
+  const parts: string[] = json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "") ?? [];
+  return parts.join("").trim() || "I couldn't analyse this image. Please try again.";
 }
 
 // ─── User mapping: Telegram chat_id → user_email ─────────────────────────────
@@ -133,7 +249,7 @@ async function buildFinancialSnapshot(userEmail: string) {
 
   // Determine current month from most recent transaction data
   const allMonths = Array.from(new Set(transactions.map((t) => t.date.slice(0, 7)))).sort().reverse();
-  const currentMonth = allMonths[0] ?? new Date().toISOString().slice(0, 7);
+  const currentMonth = allMonths[0] ?? localMonth();
 
   const income = transactions
     .filter((t) => t.type === "income" && t.date.startsWith(currentMonth))
@@ -153,7 +269,26 @@ async function buildFinancialSnapshot(userEmail: string) {
 
   const goalLines = goals.map((g) => {
     const pct = g.targetAmount > 0 ? Math.round((g.currentAmount / g.targetAmount) * 100) : 0;
-    return `  "${g.title}" — $${g.currentAmount}/$${g.targetAmount} (${pct}%), needs $${g.monthlyContribution}/mo, deadline ${g.deadline}`;
+    return `  [${g.id}] "${g.title}" — $${g.currentAmount}/$${g.targetAmount} (${pct}%), needs $${g.monthlyContribution}/mo, deadline ${g.deadline}`;
+  });
+
+  // Multi-month spending trend (last 3 months with transaction data)
+  const trendMonths = allMonths.slice(0, 3).reverse(); // oldest → newest
+  const monthlyTrend = trendMonths.map((m) => {
+    const mIncome = transactions
+      .filter((t) => t.type === "income" && t.date.startsWith(m))
+      .reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+    const mExpenses = transactions
+      .filter((t) => t.type === "expense" && t.date.startsWith(m))
+      .reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+    return { month: m, income: mIncome, expenses: mExpenses, net: mIncome - mExpenses };
+  });
+
+  // Recent transactions formatted for the prompt (with IDs for update/delete)
+  const recentTxLines = transactions.slice(0, 20).map((t) => {
+    const amt = (t.usdAmount ?? t.amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const sign = t.type === "income" ? "+" : "-";
+    return `  [${t.id}] ${t.date}  ${t.type.padEnd(7)}  ${sign}$${amt.padStart(9)}  ${t.category.padEnd(16)} "${t.note}"`;
   });
 
   return {
@@ -165,6 +300,8 @@ async function buildFinancialSnapshot(userEmail: string) {
     savingsBalance,
     categories,
     goalLines,
+    monthlyTrend,
+    recentTxLines,
     transactions,
     goals,
   };
@@ -250,7 +387,13 @@ function buildBotSystemPrompt(
   snapshot: Awaited<ReturnType<typeof buildFinancialSnapshot>>,
   kb: Record<string, unknown>
 ): string {
-  const today = new Date().toISOString().slice(0, 10); // CRITICAL: always include today's date
+  const today = localDate(); // system local timezone, not UTC
+  const d1 = new Date(); d1.setDate(d1.getDate() - 1);
+  const d2 = new Date(); d2.setDate(d2.getDate() - 2);
+  const d7 = new Date(); d7.setDate(d7.getDate() - 7);
+  const yesterday = localDate(d1);
+  const twoDaysAgo = localDate(d2);
+  const lastWeek = localDate(d7);
 
   const kbLines: string[] = [];
   const pf = (kb.personalFacts as Record<string, unknown>) ?? {};
@@ -264,43 +407,86 @@ function buildBotSystemPrompt(
 
   return `You are FinTrack AI — a personal finance assistant accessible via Telegram.
 Today's date: ${today}
+Yesterday: ${yesterday}
 
-TELEGRAM RESPONSE RULES (mandatory):
-- Keep replies SHORT and conversational — max 3-4 sentences or 5 bullet points.
-- No Markdown tables, no ASCII charts, no CSV blocks (Telegram doesn't render them well).
-- Use simple bullet lists (•) for multi-item answers.
-- For complex analysis, give a 1-2 line summary and add: "Open FinTrack for the full breakdown."
-- Always use the user's actual numbers — never guess.
-- If asked to add a transaction, confirm what you added in one line.
-- If asked about dates like "yesterday" or "last week", resolve them relative to today (${today}).
-- NEVER introduce yourself, add disclaimers, or say things like "Just a quick note" or "I'm FinTrack AI" mid-conversation. Get straight to the point.
+TELEGRAM RESPONSE RULES:
+- For simple queries (add transaction, check balance, goal status) — keep replies SHORT (2-4 sentences).
+- For financial guidance, analysis, or "how am I doing" questions — give a FULL breakdown with bullet points. Do NOT cut short.
+- No Markdown tables or ASCII charts (Telegram doesn't render them). Use bullet lists (•) instead.
+- Always use the user's actual numbers from the FINANCIAL SNAPSHOT below — never guess or estimate.
+- NEVER introduce yourself, add disclaimers, or say things like "Just a quick note" or "I'm FinTrack AI". Get straight to the point.
 - NEVER add legal/financial disclaimers. You are a personal finance tool, not a regulated advisor.
 
-ADDING TRANSACTIONS:
-When the user asks to log/add a transaction, extract: type (income/expense), amount, category, date, note.
-Valid categories: Salary, Freelance, Investments, Other Income, Rent, Food, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Savings, Other.
-After confirming with the user (or if they are explicit), output a silent JSON block at the very end:
-{"action":"add_transaction","transaction":{"type":"expense","amount":50,"category":"Food","date":"${today}","note":"lunch"}}
+─── DATE RESOLUTION (CRITICAL) ───────────────────────────────────────────────
+Today is ${today}. Always resolve relative dates to exact YYYY-MM-DD:
+• "yesterday"          → ${yesterday}
+• "2 days ago"         → ${twoDaysAgo}
+• "last week"          → around ${lastWeek}
+• "this month"         → ${snapshot.currentMonth}
+When writing action JSON, ALWAYS use the computed YYYY-MM-DD — never write "${today}" for past events.
+──────────────────────────────────────────────────────────────────────────────
 
-CREATING GOALS:
-When the user wants to save for something, ask the essential questions (target amount, deadline, monthly contribution), then output:
-{"action":"create_goal","goal":{"title":"...","targetAmount":1000,"deadline":"YYYY-MM-DD","monthlyContribution":100}}
+─── ADDING TRANSACTIONS ───────────────────────────────────────────────────────
+When user logs a transaction, extract: type (income/expense), amount, category, date (resolve it!), note.
+Valid categories: Salary, Freelance, Investments, Other Income, Rent, Food, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Savings, Other.
+Output a silent JSON block at the very end of your reply:
+{"action":"add_transaction","transaction":{"type":"expense","amount":45,"category":"Food","date":"YYYY-MM-DD","note":"lunch"}}
+Replace YYYY-MM-DD with the actual resolved date. Confirm in one conversational line what you added.
+──────────────────────────────────────────────────────────────────────────────
+
+─── MODIFYING PAST TRANSACTIONS ──────────────────────────────────────────────
+To edit/correct a past transaction, look it up in RECENT TRANSACTIONS below (find by date, amount, note).
+Copy the exact ID from the [ID] prefix and output at the very end:
+{"action":"update_transaction","id":"<exact-id>","changes":{"amount":50,"category":"Food","date":"YYYY-MM-DD","note":"corrected note"}}
+Only include fields that actually need changing. You can change amount, category, date, and note.
+──────────────────────────────────────────────────────────────────────────────
+
+─── DELETING TRANSACTIONS ────────────────────────────────────────────────────
+If the user asks to delete/remove a transaction, find its ID from RECENT TRANSACTIONS and output:
+{"action":"delete_transaction","id":"<exact-id>"}
+Confirm with the user what you deleted in one line.
+──────────────────────────────────────────────────────────────────────────────
+
+─── CREATING GOALS ───────────────────────────────────────────────────────────
+When the user wants to save for something, collect: title, target amount, deadline, monthly contribution.
+Output at the very end:
+{"action":"create_goal","goal":{"title":"Vacation","targetAmount":2000,"deadline":"YYYY-MM-DD","monthlyContribution":200}}
+──────────────────────────────────────────────────────────────────────────────
+
+─── MODIFYING GOALS ──────────────────────────────────────────────────────────
+To edit an existing goal, find its ID from ACTIVE GOALS below (the [ID] prefix).
+Output at the very end:
+{"action":"update_goal","id":"<exact-id>","changes":{"targetAmount":2000,"deadline":"YYYY-MM-DD","monthlyContribution":200,"title":"New Name"}}
+Only include fields that actually need changing. You can change title, targetAmount, currentAmount, deadline, monthlyContribution.
+──────────────────────────────────────────────────────────────────────────────
+
+─── DELETING GOALS ───────────────────────────────────────────────────────────
+To delete a goal entirely, find its ID from ACTIVE GOALS and output:
+{"action":"delete_goal","id":"<exact-id>"}
+Confirm with the user what you deleted in one line.
+──────────────────────────────────────────────────────────────────────────────
 
 ${kbLines.length > 0 ? `─── USER CONTEXT ───\n${kbLines.join("\n")}\n───────────────────\n` : ""}
-─── FINANCIAL SNAPSHOT (${snapshot.currentMonth}) ───
-Today's date:      ${today}
-Monthly income:    $${snapshot.income.toLocaleString()}
-Total expenses:    $${snapshot.totalExpenses.toLocaleString()}
-Net savings:       $${snapshot.netSavings.toLocaleString()}
-Savings rate:      ${snapshot.savingsRate}%
-Savings balance:   $${snapshot.savingsBalance.toLocaleString()}
+─── FINANCIAL SNAPSHOT (${snapshot.currentMonth}) ───────────────────────────────────────
+Today:              ${today}
+Monthly income:     $${snapshot.income.toLocaleString()}
+Total expenses:     $${snapshot.totalExpenses.toLocaleString()}
+Net savings:        $${snapshot.netSavings.toLocaleString()}
+Savings rate:       ${snapshot.savingsRate}%
+Savings balance:    $${snapshot.savingsBalance.toLocaleString()}
 
-TOP CATEGORIES:
-${snapshot.categories.slice(0, 6).join("\n")}
+SPENDING BY CATEGORY (this month):
+${snapshot.categories.join("\n") || "  No expenses yet."}
+
+MONTH-OVER-MONTH TREND:
+${snapshot.monthlyTrend.map((m) => `  ${m.month}:  income $${m.income.toLocaleString()}  |  expenses $${m.expenses.toLocaleString()}  |  net $${m.net.toLocaleString()}`).join("\n") || "  Insufficient history."}
 
 ACTIVE GOALS:
 ${snapshot.goalLines.join("\n") || "  None yet."}
-────────────────────────────────────────────`;
+
+RECENT TRANSACTIONS (last 20 — IDs required for edits/deletes):
+${snapshot.recentTxLines.join("\n") || "  No transactions yet."}
+────────────────────────────────────────────────────────────────────────────`;
 }
 
 // ─── Gemini call ──────────────────────────────────────────────────────────────
@@ -322,7 +508,7 @@ async function callGemini(systemPrompt: string, historyText: string, userMessage
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
+        generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
       }),
     }
   );
@@ -367,6 +553,38 @@ function stripActionBlock(text: string): string {
   return text.replace(/\{[\s\S]*?"action"\s*:[\s\S]*?\}(\s*)$/m, "").trim();
 }
 
+// Extract ALL action blocks (for multi-transaction receipts)
+function extractAllJsonActions(text: string): Array<Record<string, unknown>> {
+  const results: Array<Record<string, unknown>> = [];
+  const regex = /\{[\s\S]*?"action"\s*:/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const startIdx = match.index;
+      let depth = 0;
+      let endIdx = startIdx;
+      for (let i = startIdx; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}") {
+          depth--;
+          if (depth === 0) { endIdx = i; break; }
+        }
+      }
+      const parsed = JSON.parse(text.slice(startIdx, endIdx + 1));
+      results.push(parsed);
+      regex.lastIndex = endIdx + 1; // advance past this block
+    } catch {
+      // skip malformed block
+    }
+  }
+  return results;
+}
+
+// Strip ALL action blocks from reply text
+function stripAllActionBlocks(text: string): string {
+  return text.replace(/\{[\s\S]*?"action"\s*:[\s\S]*?\}/g, "").trim();
+}
+
 async function executeAction(
   action: Record<string, unknown>,
   userEmail: string
@@ -393,6 +611,44 @@ async function executeAction(
     return `✅ Added: ${tx.type === "income" ? "+" : "-"}$${tx.amount} (${tx.category}) on ${tx.date}`;
   }
 
+  if (action.action === "update_transaction") {
+    const id = String(action.id);
+    const changes = action.changes as Record<string, unknown>;
+    const updatePayload: Record<string, unknown> = {};
+    if (changes.amount !== undefined) updatePayload.amount = Number(changes.amount);
+    if (changes.category !== undefined) updatePayload.category = String(changes.category);
+    if (changes.date !== undefined) updatePayload.date = String(changes.date);
+    if (changes.note !== undefined) updatePayload.note = String(changes.note);
+
+    const { error } = await supabase
+      .from("transactions")
+      .update(updatePayload)
+      .eq("id", id)
+      .eq("user_email", userEmail);
+
+    if (error) {
+      console.error("Failed to update transaction:", error);
+      return null;
+    }
+    const fieldSummary = Object.entries(updatePayload).map(([k, v]) => `${k}=${v}`).join(", ");
+    return `✏️ Updated transaction: ${fieldSummary}`;
+  }
+
+  if (action.action === "delete_transaction") {
+    const id = String(action.id);
+    const { error } = await supabase
+      .from("transactions")
+      .delete()
+      .eq("id", id)
+      .eq("user_email", userEmail);
+
+    if (error) {
+      console.error("Failed to delete transaction:", error);
+      return null;
+    }
+    return `🗑️ Transaction deleted.`;
+  }
+
   if (action.action === "create_goal") {
     const goal = action.goal as Record<string, unknown>;
     const id = crypto.randomUUID();
@@ -410,6 +666,34 @@ async function executeAction(
       return null;
     }
     return `🎯 Goal created: "${goal.title}" — $${goal.targetAmount} by ${goal.deadline}`;
+  }
+
+  if (action.action === "update_goal") {
+    const id = String(action.id);
+    const changes = action.changes as Record<string, unknown>;
+    const updatePayload: Record<string, unknown> = {};
+    if (changes.title !== undefined) updatePayload.title = String(changes.title);
+    if (changes.targetAmount !== undefined) updatePayload.target_amount = Number(changes.targetAmount);
+    if (changes.currentAmount !== undefined) updatePayload.current_amount = Number(changes.currentAmount);
+    if (changes.deadline !== undefined) updatePayload.deadline = String(changes.deadline);
+    if (changes.monthlyContribution !== undefined) updatePayload.monthly_contribution = Number(changes.monthlyContribution);
+    const { error } = await supabase.from("goals").update(updatePayload).eq("id", id).eq("user_email", userEmail);
+    if (error) {
+      console.error("Failed to update goal:", error);
+      return null;
+    }
+    const fieldSummary = Object.entries(updatePayload).map(([k, v]) => `${k}=${v}`).join(", ");
+    return `✏️ Updated goal: ${fieldSummary}`;
+  }
+
+  if (action.action === "delete_goal") {
+    const id = String(action.id);
+    const { error } = await supabase.from("goals").delete().eq("id", id).eq("user_email", userEmail);
+    if (error) {
+      console.error("Failed to delete goal:", error);
+      return null;
+    }
+    return `🗑️ Goal deleted.`;
   }
 
   return null;
@@ -481,11 +765,66 @@ Deno.serve(async (req: Request) => {
   }
 
   const message = update.message;
-  if (!message?.text) return new Response("OK");
+  if (!message?.text && !message?.photo) return new Response("OK");
 
   const chatId = message.chat.id;
-  const text = message.text.trim();
   const firstName = message.from.first_name;
+
+  // ── Photo / receipt message ──────────────────────────────────────────────
+  if (message.photo && message.photo.length > 0) {
+    // Resolve user email first
+    const userEmail = await getUserEmail(chatId);
+    if (!userEmail) {
+      await sendMessage({
+        chat_id: chatId,
+        text: "⚠️ Your Telegram isn't linked to a FinTrack account yet.\n\nOpen FinTrack → Settings → Telegram and scan the QR code.",
+      });
+      return new Response("OK");
+    }
+
+    await sendTyping(chatId);
+
+    try {
+      // Pick the highest-resolution photo (last in array)
+      const bestPhoto = message.photo[message.photo.length - 1];
+      const photoData = await downloadTelegramPhoto(bestPhoto.file_id);
+
+      if (!photoData) {
+        await sendMessage({ chat_id: chatId, text: "⚠️ Couldn't download the image. Please try again." });
+        return new Response("OK");
+      }
+
+      const snapshot = await buildFinancialSnapshot(userEmail);
+      const caption = message.caption ?? "";
+      const rawReply = await processReceiptImage(photoData.base64, photoData.mimeType, caption, snapshot);
+
+      // Execute ALL action blocks found in the reply
+      const allActions = extractAllJsonActions(rawReply);
+      const results: string[] = [];
+      for (const action of allActions) {
+        const result = await executeAction(action, userEmail);
+        if (result) results.push(result);
+      }
+
+      const visibleReply = stripAllActionBlocks(rawReply);
+      const finalReply = results.length > 0
+        ? `${visibleReply}\n\n${results.join("\n")}`
+        : visibleReply;
+
+      const sessionId = await ensureSession(userEmail);
+      await saveMessages(sessionId, userEmail, `[receipt image] ${caption}`, rawReply);
+
+      await sendMessage({ chat_id: chatId, text: finalReply || "Done!" });
+    } catch (err) {
+      console.error("Receipt handler error:", err);
+      await sendMessage({ chat_id: chatId, text: "⚠️ Something went wrong reading the receipt. Please try again." });
+    }
+
+    return new Response("OK");
+  }
+
+  // ── Text message ─────────────────────────────────────────────────────────
+  const text = message.text!.trim();
 
   // Handle /start with optional token
   if (text.startsWith("/start")) {
@@ -540,11 +879,6 @@ Deno.serve(async (req: Request) => {
     await sendMessage({
       chat_id: chatId,
       text: replyText || "Done!",
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "Open FinTrack →", url: "https://your-fintrack-app.vercel.app" },
-        ]],
-      },
     });
   } catch (err) {
     console.error("Bot handler error:", err);

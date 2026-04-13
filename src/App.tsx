@@ -8,6 +8,7 @@ import AppLayout from "@/components/AppLayout";
 import { SupabaseSync } from "@/components/SupabaseSync";
 import { AuthProvider } from "@/hooks/useAuth";
 import { LoginModal } from "@/components/LoginModal";
+import { OnboardingModal } from "@/components/OnboardingModal";
 import Dashboard from "./pages/Dashboard";
 import Transactions from "./pages/Transactions";
 import Goals from "./pages/Goals";
@@ -31,6 +32,7 @@ const App = () => (
           <Sonner />
           <BrowserRouter>
             <LoginModal />
+            <OnboardingModal />
             <AppLayout>
             <Routes>
               <Route path="/" element={<Dashboard />} />

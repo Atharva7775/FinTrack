@@ -1,11 +1,16 @@
-import { useFinanceStore, selectExpenseAutopsy, CATEGORY_TYPE } from '../store/financeStore'
+import { useFinanceStore, selectExpenseAutopsy, selectBudgetStatuses, CATEGORY_TYPE } from '../store/financeStore'
 import type { UserKnowledgeBase } from './userKnowledgeBase'
 import FINANCIAL_EXPERT_SKILL from '../../.agents/skills/financial-operations-expert/SKILL.md?raw'
+
+// ─── Local date helpers (system timezone, not UTC) ────────────────────────────
+const _localDate = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const _localMonth = (d = new Date()) => _localDate(d).slice(0, 7)
 
 // ─── Context serializer ───────────────────────────────────────────────────────
 
 export function buildFinancialContext() {
-  const { transactions, goals, savingsBalance } = useFinanceStore.getState()
+  const { transactions, goals, savingsBalance, budgets } = useFinanceStore.getState()
 
   // Use the most recent month with actual data, not the real calendar month.
   // This prevents empty snapshots when the user hasn't added transactions yet
@@ -13,7 +18,7 @@ export function buildFinancialContext() {
   const allMonthsWithData = Array.from(
     new Set(transactions.map(t => t.date.slice(0, 7)))
   ).sort().reverse()
-  const currentMonth = allMonthsWithData[0] || new Date().toISOString().slice(0, 7)
+  const currentMonth = allMonthsWithData[0] || _localMonth()
 
   const autopsy = selectExpenseAutopsy(transactions, currentMonth)
 
@@ -26,8 +31,8 @@ export function buildFinancialContext() {
   // Anchor to the most recent data month, not the calendar month.
   const [year, month] = currentMonth.split('-').map(Number)
   const months = [
-    new Date(year, month - 3, 1).toISOString().slice(0, 7),
-    new Date(year, month - 2, 1).toISOString().slice(0, 7),
+    _localMonth(new Date(year, month - 3, 1)),
+    _localMonth(new Date(year, month - 2, 1)),
     currentMonth,
   ]
 
@@ -56,6 +61,20 @@ export function buildFinancialContext() {
     members: g.members || [],
   }))
 
+  // Budget statuses for current month (income adjusted for savings-goal contributions)
+  const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
+  const adjustedIncome = Math.max(income - totalGoalSavings, 0);
+  const budgetStatuses = selectBudgetStatuses(budgets, transactions, adjustedIncome, currentMonth)
+  const budgetsSummary = budgetStatuses.map(bs => ({
+    category: bs.category,
+    limitAmount: bs.limitAmount,
+    spent: bs.spent,
+    remaining: bs.remaining,
+    percentageUsed: Math.round(bs.percentageUsed),
+    status: bs.status,
+    dailyAllowance: Math.round(bs.dailyAllowance),
+  }))
+
   return {
     currentMonth,
     income,
@@ -70,6 +89,7 @@ export function buildFinancialContext() {
     categories: autopsy.categories,
     optionalTrend,
     goals: goalsSummary,
+    budgets: budgetsSummary,
   }
 }
 

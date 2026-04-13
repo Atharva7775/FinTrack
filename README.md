@@ -1,21 +1,20 @@
 # FinTrack
 
-A personal finance tracker with income & expense management, savings goals, AI-powered insights, and a Scenario Lab for asking "what-if" financial questions.
+A personal finance tracker with income & expense management, savings goals, AI-powered insights, a Scenario Lab for "what-if" financial questions, and a **Telegram bot** that lets you log transactions, scan receipts, and get financial guidance on the go.
 
 ---
 
 ## Features
 
-| Page | Description |
-|------|-------------|
+| Page / Feature | Description |
+|----------------|-------------|
 | **Dashboard** | Monthly overview — income, expenses, net savings, savings rate, and charts (bar, pie, line). Navigate month-by-month through your transaction history. |
-| **Autopsy** | Detailed breakdown of "Essential vs. Optional" spending. Shows you exactly how much is discretionary and highlights categories that grew >10% month-over-month. |
-| **Waste** | Weekly proactive pulse on overspending. Compares your recent week to your 3-week average and highlights "leaks" that could be redirected to goals. |
 | **Transactions** | Add, edit, and delete income/expense entries across 15 categories (Salary, Rent, Food, Travel, etc.). |
-| **Goals** | Create savings goals with a target amount, deadline, and monthly contribution. Log contributions, track progress, and use the **Goal Optimizer** to get spending-cut recommendations. |
-| **Insights** | Rule-based spending alerts, month-over-month expense trend, safe-to-spend calculator, recommended 50/30/20 budget split, and top spending categories chart. |
-| **Scenario Lab** | AI Financial Co-Worker — powered by **Google Gemini 2.5 Flash**. Answers questions using your real transactions, goals, and financial context. Supports file/image attachments, Google Search grounding, and persistent AI Memory. |
-| **Settings** | Splitwise sync, seed data management, view mode toggle, and **AI Memory** — view and manage everything the AI has learned about you. |
+| **Goals** | Create savings goals with a target amount, deadline, and monthly contribution. Log contributions, track progress, and use the **Goal Optimizer** to get AI-powered spending-cut recommendations. |
+| **Insights** | Detailed "Essential vs. Optional" expense autopsy. Highlights categories that grew >10% month-over-month. |
+| **Scenario Lab** | AI Financial Co-Worker — powered by **Google Gemini 2.5 Flash**. Answers questions using your real transactions, goals, and financial context. Supports file/image/PDF attachments, receipt OCR, Google Search grounding, and persistent AI Memory. |
+| **Settings** | Splitwise sync, seed data management, view mode toggle, **AI Memory** viewer, and **Telegram bot linking** (QR code). |
+| **Telegram Bot** | Full-featured bot (`@Fintrack100_bot`) with OCR receipt scanning, transaction logging, past-transaction editing, goal tracking, financial guidance, and multi-month trend analysis. Runs 24/7 independently of the web app. |
 
 ---
 
@@ -47,79 +46,61 @@ Then open **http://localhost:8080** in your browser.
 
 ## Environment variables
 
-Copy the example env file and fill in your keys:
-
-```bash
-cp .env.example .env
-```
-
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `VITE_SUPABASE_URL` | Optional | Your Supabase project URL (e.g. `https://xxxx.supabase.co`) |
 | `VITE_SUPABASE_ANON_KEY` | Optional | Your Supabase anon/public API key |
-| `VITE_GEMINI_API_KEY` | **Required** | API key for Google Gemini (get one at [Google AI Studio](https://aistudio.google.com/app/apikey)) |
+| `VITE_GEMINI_API_KEY` | **Required** | API key for Google Gemini — [get one here](https://aistudio.google.com/app/apikey) |
 | `VITE_GEMINI_MODEL` | Optional | Model name (default: `gemini-2.5-flash`) |
 | `VITE_GOOGLE_CLIENT_ID` | Optional | Web OAuth client ID for Google Sign-In |
+| `VITE_TELEGRAM_BOT_USERNAME` | Optional | Telegram bot username for QR linking UI (e.g. `Fintrack100_bot`) |
 
-If none of the variables are set, FinTrack runs entirely in-memory (data is lost on refresh).
+If Supabase vars are not set, FinTrack runs entirely in-memory (data is lost on refresh).
 
 ---
 
 ## Saving your data (Supabase)
 
-By default, FinTrack keeps everything in memory — transactions, goals, contributions, and settings are lost when you refresh or close the tab. To **persist** all data, connect the app to a **Supabase** (PostgreSQL) project.
+By default, FinTrack keeps everything in memory. To persist data, connect to a **Supabase** (PostgreSQL) project.
 
 ### 1. Create a Supabase project
 
-1. Go to [supabase.com](https://supabase.com) and sign in (or create an account).
-2. Click **New project**, pick an organization, name it (e.g. `fintrack`), set a database password, and create the project.
-3. In the project dashboard, open **Settings → API**. Copy:
-   - **Project URL** (e.g. `https://xxxx.supabase.co`)
-   - **anon public** key (under "Project API keys").
+1. Go to [supabase.com](https://supabase.com) and sign in.
+2. Click **New project**, name it (e.g. `fintrack`), set a database password, and create it.
+3. Open **Settings → API** and copy the **Project URL** and **anon public** key.
 
 ### 2. Create the database tables
 
 1. In Supabase, open **SQL Editor**.
-2. Copy the contents of **`supabase/schema.sql`** from this repo and paste into the editor.
-3. Run the script. It creates the following tables:
+2. Paste and run **`supabase/schema.sql`** from this repo.
+3. Then run the migration files in order:
 
-| Table | Purpose |
-|-------|---------|
-| `transactions` | Every income/expense entry |
-| `goals` | Savings targets with deadline and monthly contribution |
-| `goal_contributions` | Individual contribution events per goal |
-| `app_settings` | Key-value store (e.g. savings balance) |
-| `ai_chat_messages` | Scenario Lab chat history |
+| Migration | Purpose |
+|-----------|---------|
+| `supabase/migrations/001_splitwise_fields.sql` | Adds Splitwise balance fields |
+| `supabase/migrations/002_user_email_isolation.sql` | Adds `user_email` column to all tables for per-user isolation |
+| `supabase/migrations/003_app_settings_user_isolation.sql` | Composite PK `(key, user_email)` on `app_settings` |
+| `supabase/migrations/004_telegram_bot.sql` | Adds `source` to transactions, `channel`/`user_email` to chat messages, Realtime publications |
 
 ### 3. Configure the app
 
-1. In `.env`, set:
-   ```env
-   VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-   VITE_SUPABASE_ANON_KEY=your-anon-key
-   ```
-2. Restart the dev server (`npm run dev`). The app loads existing data from Supabase on startup and **auto-saves changes** (debounced at 1.5 s) whenever you add, edit, or delete transactions, goals, or the savings balance.
+Add to `.env`:
+```env
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
 
-If the env vars are not set, the app still runs using in-memory storage only.
-
-### Maintaining the database
-
-- **Backups:** In Supabase, use **Settings → Database → Backups** (or your plan's backup policy). You can also export data via SQL Editor (e.g. `SELECT * FROM transactions`) or use `pg_dump` if you have direct DB access.
-- **Migrations:** If you change the schema later, add a new SQL file under `supabase/` (e.g. `supabase/migrations/002_add_column.sql`) and run it in the SQL Editor or via the Supabase CLI.
-- **Auth (optional):** The schema does not require auth. When you add Supabase Auth, enable Row Level Security (RLS) and add policies so each user only sees their own rows (e.g. by `user_id` on each table).
+The app loads existing data from Supabase on startup and **auto-saves** changes (debounced at 1.5s).
 
 ---
 
 ## Scenario Lab (AI chat)
 
-Scenario Lab sends a structured snapshot of your finances to **Google Gemini 2.5 Flash**, augmented with a persistent User Knowledge Base and a Financial Operations Expert skill.
+Scenario Lab sends a structured snapshot of your finances to **Google Gemini 2.5 Flash** on every message.
 
 ### Setup
 1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
-2. In `.env`:
-   ```env
-   VITE_GEMINI_API_KEY=your-gemini-api-key
-   ```
+2. Add to `.env`: `VITE_GEMINI_API_KEY=your-key`
 3. Restart the dev server.
 
 ### AI Features
@@ -127,12 +108,79 @@ Scenario Lab sends a structured snapshot of your finances to **Google Gemini 2.5
 | Feature | Description |
 |---------|-------------|
 | **Financial Context** | AI sees your real transactions, goals, savings balance, and spending trends on every message. |
-| **AI Memory (Knowledge Base)** | The AI passively learns about you across conversations — your city, risk tolerance, stated goals, spending personality labels, and preferences. Stored per-user in Supabase. Manageable in Settings → AI Memory. |
+| **AI Memory (Knowledge Base)** | The AI passively learns about you across conversations — city, risk tolerance, goals, spending personality. Stored per-user in Supabase; manageable in Settings → AI Memory. |
 | **Financial Operations Expert** | Built-in skill covering profit/loss analysis, tax planning (quarterly estimates, S-Corp thresholds), cash flow forecasting, and bookkeeping frameworks. |
-| **Google Search Grounding** | Gemini automatically searches the web for live data (interest rates, tax rules, market info) when your question requires it. |
-| **File & Image Attachments** | Attach bank statements, PDFs, or screenshots — the AI reads and analyzes them against your data. |
-| **AI-Optimized Goal Milestones** | When creating a goal, the AI suggests specific milestones to keep you engaged. |
-| **Action Blocks** | Ask the AI to create a goal, log a transaction, or set a budget — it emits structured JSON that the app applies automatically. |
+| **Google Search Grounding** | Gemini automatically searches the web for live data (interest rates, tax rules, market info) when needed. |
+| **Receipt & Document OCR** | Attach a photo of a bill, bank statement, or PDF — the AI reads it against your financial data. Click the 📎 paperclip button in the chat input. |
+| **Action Blocks** | Ask the AI to create a goal, log a transaction, or update data — it emits structured JSON the app applies automatically. |
+| **Decision Simulation** | Ask "what if" questions: rent increases, investment plans, goal changes — the AI projects outcomes using your real numbers. |
+
+---
+
+## Telegram Bot
+
+FinTrack includes a **Telegram bot** (`@Fintrack100_bot`) powered by the same Gemini AI and Supabase database as the web app. It runs 24/7 as a Supabase Edge Function — independent of the web app.
+
+### Linking your account
+
+1. Open FinTrack → **Settings → Telegram**.
+2. Click **Generate QR Code** and scan it with your phone camera or Telegram.
+3. Tap the link that opens — this sends `/start <token>` to the bot and links your account.
+4. Done. All transactions added via the bot appear instantly in the web app.
+
+### Bot capabilities
+
+| Capability | Example |
+|-----------|---------|
+| **Log a transaction** | "I spent $45 on lunch today" |
+| **Log on a past date** | "Add $30 food yesterday" / "Coffee for $4.80 two days ago" |
+| **Ask for financial guidance** | "How am I doing this month?" / "How can I cut my spending?" |
+| **Edit a past transaction** | "Fix that $50 coffee entry — it was actually $4.80" |
+| **Delete a transaction** | "Remove the duplicate rent entry" |
+| **Check goals** | "How far am I from my travel goal?" |
+| **Create a new goal** | "I want to save $2,000 for a laptop by December" |
+| **Receipt OCR** | Send a photo of any receipt — the bot extracts line items, groups by category, and adds all transactions automatically |
+| **Multi-month trends** | "Compare my spending over the last 3 months" |
+
+### Receipt scanning (Telegram)
+
+Send a photo of any bill or receipt — the bot:
+1. Downloads the image from Telegram
+2. Sends it to Gemini Vision for OCR
+3. Groups items into categories: Food, Travel, Entertainment, Shopping, Utilities, Healthcare, Subscriptions, Rent, Education, Savings, Other
+4. Adds each category as a separate transaction with the correct date (uses receipt date if printed, otherwise today)
+5. Replies with a confirmation summary
+
+You can optionally add a caption like "this is from last Tuesday" to provide extra context.
+
+### Bot deployment (for self-hosting)
+
+The bot runs as a Supabase Edge Function. To deploy your own:
+
+```bash
+# Install Supabase CLI
+brew install supabase/tap/supabase
+
+# Login and link your project
+supabase login
+supabase link --project-ref YOUR_PROJECT_REF
+
+# Set secrets
+supabase secrets set TELEGRAM_BOT_TOKEN=your-bot-token
+supabase secrets set TELEGRAM_WEBHOOK_SECRET=your-webhook-secret
+supabase secrets set GEMINI_API_KEY=your-gemini-key
+supabase secrets set GEMINI_MODEL=gemini-2.5-flash
+
+# Deploy
+supabase functions deploy bot-webhook --no-verify-jwt
+
+# Register webhook with Telegram
+curl "https://api.telegram.org/botYOUR_BOT_TOKEN/setWebhook" \
+  -d "url=https://YOUR_PROJECT_REF.supabase.co/functions/v1/bot-webhook" \
+  -d "secret_token=your-webhook-secret"
+```
+
+After any code changes, redeploy with `supabase functions deploy bot-webhook --no-verify-jwt`.
 
 ---
 
@@ -141,49 +189,50 @@ Scenario Lab sends a structured snapshot of your finances to **Google Gemini 2.5
 ```
 src/
 ├── components/
-│   ├── AppLayout.tsx          # Sidebar navigation and page shell
-│   ├── AnimatedCounter.tsx    # Animated number display
-│   ├── CursorTooltip.tsx      # Hover tooltip provider
-│   ├── GoalOptimizerModal.tsx # Spending-cut recommendations modal
-│   ├── NavLink.tsx            # Sidebar nav item
-│   ├── SupabaseSync.tsx       # Loads & auto-saves data to/from Supabase
-│   └── ui/                   # shadcn/ui primitives
+│   ├── AppLayout.tsx             # Sidebar navigation, page shell, Realtime sync hook
+│   ├── AnimatedCounter.tsx       # Animated number display
+│   ├── CursorTooltip.tsx         # Hover tooltip provider
+│   ├── GoalOptimizerModal.tsx    # AI-powered spending-cut recommendations modal
+│   ├── NavLink.tsx               # Sidebar nav item
+│   └── SupabaseSync.tsx          # Loads & auto-saves data to/from Supabase
 ├── hooks/
+│   ├── useAuth.tsx               # Google Sign-In auth hook
+│   ├── useRealtimeSync.ts        # Supabase Realtime hook — syncs bot-inserted transactions live
 │   ├── use-mobile.tsx
-│   ├── use-toast.ts
-│   └── useAuth.tsx            # Supabase auth hook
+│   └── use-toast.ts
 ├── lib/
-│   ├── supabase.ts            # Supabase client
-│   ├── supabaseSync.ts        # Fetch/persist helpers
-│   ├── aiChatClient.ts        # Gemini REST client (Google Search grounding enabled)
-│   ├── aiContextBuilder.ts    # Builds system prompt with KB + Financial Expert skill
-│   ├── aiSystemPrompt.ts      # Base prompt + KB_UPDATE format instructions
-│   ├── userKnowledgeBase.ts   # AI Memory — types, derive, merge, load, save
+│   ├── supabase.ts               # Supabase client
+│   ├── supabaseSync.ts           # Fetch/persist helpers
+│   ├── aiChatClient.ts           # Gemini REST client (Vision + Google Search grounding)
+│   ├── aiContextBuilder.ts       # Builds system prompt with KB + Financial Expert skill (local-timezone dates)
+│   ├── aiSystemPrompt.ts         # Base prompt + KB_UPDATE format instructions
+│   ├── userKnowledgeBase.ts      # AI Memory — types, derive, merge, load, save
 │   ├── financialSnapshotForAI.ts # Serializes store state for AI context
-│   ├── scenarioEngine.ts      # Scenario simulation helpers
-│   ├── splitwise.ts           # Splitwise API integration
-│   ├── pdfGenerator.ts        # PDF report export
-│   └── utils.ts               # Date helpers, class utilities
+│   ├── scenarioEngine.ts         # Scenario simulation helpers
+│   ├── splitwise.ts              # Splitwise API integration
+│   ├── pdfGenerator.ts           # PDF report export
+│   └── utils.ts                  # Class utilities
 ├── pages/
-│   ├── Dashboard.tsx          # Monthly overview & charts
-│   ├── Transactions.tsx       # Transaction list & form
-│   ├── Goals.tsx              # Goals list, contributions, optimizer
-│   ├── Insights.tsx           # Spending analysis & budget suggestions
-│   ├── ScenarioLab.tsx        # Gemini AI chat with KB integration
-│   ├── Settings.tsx           # Splitwise sync, seed data, AI Memory viewer
+│   ├── Dashboard.tsx             # Monthly overview & charts
+│   ├── Transactions.tsx          # Transaction list & form
+│   ├── Goals.tsx                 # Goals list, contributions, optimizer
+│   ├── Insights.tsx              # Expense autopsy
+│   ├── ScenarioLab.tsx           # Gemini AI chat — OCR attachments, action blocks, KB
+│   ├── Settings.tsx              # Splitwise sync, seed data, AI Memory, Telegram QR linking
 │   └── NotFound.tsx
-├── store/
-│   ├── financeStore.ts        # Zustand global state (transactions, goals, savings)
-│   └── chatStore.ts           # Persisted chat history
-├── App.tsx
-└── main.tsx
+└── store/
+    ├── financeStore.ts           # Zustand global state (transactions, goals, savings)
+    └── chatStore.ts              # Chat session state
+supabase/
+├── schema.sql                    # All table definitions
+├── migrations/                   # Incremental schema changes (001–004)
+└── functions/
+    └── bot-webhook/
+        └── index.ts              # Telegram bot Deno Edge Function
 .agents/
 └── skills/
     └── financial-operations-expert/
-        └── SKILL.md           # Financial expert skill injected into AI system prompt
-supabase/
-├── schema.sql                 # All table definitions
-└── migrations/                # Incremental schema changes
+        └── SKILL.md              # Financial expert skill injected into AI system prompt
 ```
 
 ---
@@ -199,9 +248,13 @@ supabase/
 | State management | [Zustand](https://zustand-demo.pmnd.rs/) |
 | Charts | [Recharts](https://recharts.org/) |
 | Animations | [Framer Motion](https://www.framer-motion.com/) |
-| Database | [Supabase](https://supabase.com/) (PostgreSQL) — optional |
-| AI | [Google Gemini 2.5 Flash](https://aistudio.google.com/) with Google Search grounding |
-| AI Skills | Financial Operations Expert (profit/loss, tax planning, cash flow) |
+| Database | [Supabase](https://supabase.com/) (PostgreSQL + Realtime) |
+| Bot runtime | [Supabase Edge Functions](https://supabase.com/docs/guides/functions) (Deno) |
+| AI model | [Google Gemini 2.5 Flash](https://aistudio.google.com/) (text + vision) |
+| AI grounding | Google Search (live rates, tax rules, market data) |
+| AI skills | Financial Operations Expert (profit/loss, tax planning, cash flow) |
+| Bot platform | [Telegram Bot API](https://core.telegram.org/bots/api) |
+| QR codes | [qrcode.react](https://github.com/zpao/qrcode.react) |
 | Forms | [React Hook Form](https://react-hook-form.com/) + [Zod](https://zod.dev/) |
 | Testing | [Vitest](https://vitest.dev/) + [Testing Library](https://testing-library.com/) |
 
@@ -209,151 +262,14 @@ supabase/
 
 ## How can I edit this code?
 
-**Use your preferred IDE**
+Clone the repo and run locally:
 
-Clone this repo and push changes. The only requirement is having Node.js & npm installed — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
+```bash
 git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
 cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
 npm install
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+You can also edit files directly on GitHub or use GitHub Codespaces.
 
-- Navigate to the desired file(s).
-- Click the **Edit** button (pencil icon) at the top right of the file view.
-- Make your changes and commit.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click the **Code** button (green button) near the top right.
-- Select the **Codespaces** tab.
-- Click **New codespace** to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-
-Bank Account Integration (Automatic Transactions)
-
-FinTrack supports secure bank account integration to automatically import financial activity, eliminating the need for manual transaction entry.
-
-Once a user connects their bank account:
-
-Transactions are automatically captured in near real-time
-
-Income and expenses are auto-categorized
-
-The Dashboard and Insights update instantly
-
-Users no longer need to manually log entries in the Transactions page
-
-Duplicate detection and reconciliation keep the ledger clean
-
-This allows FinTrack to function as a live financial monitoring system rather than a manual expense tracker.
-
-Typical integrations may use financial data aggregation providers such as Plaid or Yodlee to securely retrieve transaction data from banks.
-
-Scenario Lab (AI Financial Co-Worker)
-
-The Scenario Lab is the central AI workspace of FinTrack.
-
-All AI capabilities are handled inside Scenario Lab — the application does not include separate AI tabs or assistants elsewhere.
-
-The AI co-worker is powered by models such as Claude and can interact directly with the user’s financial data.
-
-Users can ask the AI to:
-
-Analyze spending behavior
-
-Recommend budget adjustments
-
-Modify Goals
-
-Update or correct Transactions
-
-Plan savings strategies
-
-Answer financial questions using the user’s real financial context
-
-Example prompts:
-
-“Create a plan to save $8,000 in the next 10 months.”
-
-“Reduce my dining expenses and update my monthly targets.”
-
-“Increase my emergency fund goal to $5,000.”
-
-“Analyze my spending and suggest ways to save $300 per month.”
-
-The AI has contextual awareness of:
-
-transactions
-
-goals
-
-savings balance
-
-spending patterns
-
-This enables it to provide personalized financial recommendations and perform structured updates within the system.
-
-Decision Simulation Engine
-
-FinTrack includes a financial decision simulation engine inside the Scenario Lab that allows users to explore “what-if” financial scenarios before making real decisions.
-
-Users can simulate scenarios such as:
-
-increasing rent or housing costs
-
-planning travel or large purchases
-
-adjusting monthly savings contributions
-
-modifying financial goals
-
-changing spending habits
-
-Example scenarios:
-
-“If my rent increases by $400 next year, how will it affect my savings?”
-
-“What happens if I invest $300 every month for the next 12 months?”
-
-“If I cut dining expenses by 20%, how fast can I reach my travel goal?”
-
-The simulation engine analyzes the user’s financial data and provides:
-
-projected savings outcomes
-
-goal completion timelines
-
-monthly cash-flow changes
-
-recommendations to stay financially stable
-
-This transforms FinTrack from a passive tracking tool into a financial decision support system.
-
-AI Architecture Principle
-
-All intelligent capabilities in FinTrack are centralized inside the Scenario Lab.
-
-The rest of the application focuses on:
-
-financial data capture
-
-financial visualization
-
-goal tracking
-
-financial insights
-
-The Scenario Lab is the only AI interaction layer, ensuring that all advanced financial reasoning, simulations, and automated adjustments are performed in a single, unified workspace.

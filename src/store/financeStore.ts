@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { SEED_TRANSACTIONS } from '@/lib/seedData';
 
 export type TransactionType = 'income' | 'expense';
 
@@ -99,6 +98,29 @@ export interface Goal {
 // User-editable category type overrides
 export type UserCategoryTypeOverrides = Partial<Record<Category, CategoryType>>;
 
+export interface Budget {
+  id: string;
+  category: Category;
+  /** 'percentage' = % of monthly income; 'fixed' = fixed dollar limit */
+  type: 'percentage' | 'fixed';
+  percentage?: number;      // set when type === 'percentage'
+  fixedAmount?: number;     // set when type === 'fixed'
+  rolloverBalance: number;  // unused amount carried forward from previous month
+  alertThreshold: number;   // % usage at which to show alert (default 80)
+}
+
+export interface BudgetStatus {
+  category: Category;
+  limitAmount: number;      // computed $ limit this month (including rollover)
+  spent: number;            // total spent this month in this category
+  remaining: number;        // limitAmount - spent (floored at 0)
+  percentageUsed: number;   // spent / limitAmount * 100
+  dailyAllowance: number;   // remaining / days left in month
+  projectedSpend: number;   // extrapolated full-month spend at current burn rate
+  status: 'ok' | 'warning' | 'danger' | 'exceeded';
+  isInRedZone: boolean;     // true when status is 'danger' or 'exceeded'
+}
+
 export interface HydratePayload {
   transactions: Transaction[];
   goals: Goal[];
@@ -108,6 +130,7 @@ export interface HydratePayload {
   splitwiseBalances: { owe: number; owed: number } | null;
   viewMode: "personal" | "splitwise";
   budgetSplit?: [number, number, number]; // [needs, wants, savings] as percentages (0-100)
+  budgets?: Budget[]; // per-category monthly budgets
 }
 
 interface FinanceStore {
@@ -132,6 +155,21 @@ interface FinanceStore {
   deleteGoal: (id: string) => void;
   addGoalContribution: (goalId: string, amount: number, date: string) => void;
   setSavingsBalance: (amount: number) => void;
+  /** Whether the current user has completed or skipped onboarding */
+  hasOnboarded: boolean;
+  setHasOnboarded: (v: boolean) => void;
+  /** Whether SupabaseSync has finished its initial data fetch */
+  isHydrated: boolean;
+  setIsHydrated: (v: boolean) => void;
+  /** Per-category monthly budgets */
+  budgets: Budget[];
+  setBudgets: (budgets: Budget[]) => void;
+  addBudget: (b: Omit<Budget, 'id'>) => void;
+  updateBudget: (id: string, changes: Partial<Budget>) => void;
+  deleteBudget: (id: string) => void;
+  /** True once the user has saved at least one budget */
+  hasBudgetSetup: boolean;
+  setHasBudgetSetup: (v: boolean) => void;
   /** Load data from database; also resets nextId from max existing id */
   hydrate: (payload: HydratePayload) => void;
   /** Reset store to empty state (used on sign-out or user change) */
@@ -140,10 +178,10 @@ interface FinanceStore {
   setCategoryType: (category: Category, type: CategoryType) => void;
 }
 
-let nextId = SEED_TRANSACTIONS.length + 1;
+let nextId = 1;
 
 export const useFinanceStore = create<FinanceStore>((set, get) => ({
-  transactions: SEED_TRANSACTIONS,
+  transactions: [],
   goals: [],
   savingsBalance: 0,
   splitwiseKey: null,
@@ -151,6 +189,25 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
   splitwiseBalances: null,
   viewMode: "personal",
   budgetSplit: [50, 30, 20],
+  hasOnboarded: false,
+  setHasOnboarded: (v) => set({ hasOnboarded: v }),
+  isHydrated: false,
+  setIsHydrated: (v) => set({ isHydrated: v }),
+  budgets: [],
+  setBudgets: (budgets) => set({ budgets, hasBudgetSetup: budgets.length > 0 }),
+  addBudget: (b) => set((s) => {
+    const budget = { ...b, id: String(nextId++) };
+    return { budgets: [...s.budgets, budget], hasBudgetSetup: true };
+  }),
+  updateBudget: (id, changes) => set((s) => ({
+    budgets: s.budgets.map((b) => b.id === id ? { ...b, ...changes } : b),
+  })),
+  deleteBudget: (id) => set((s) => {
+    const next = s.budgets.filter((b) => b.id !== id);
+    return { budgets: next, hasBudgetSetup: next.length > 0 };
+  }),
+  hasBudgetSetup: false,
+  setHasBudgetSetup: (v) => set({ hasBudgetSetup: v }),
   setBudgetSplit: (split) => set({ budgetSplit: split }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setSplitwiseKey: (key) => set({ splitwiseKey: key }),
@@ -206,6 +263,7 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
     payload.transactions.forEach((t) => { const n = parseInt(t.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
     payload.goals.forEach((g) => { const n = parseInt(g.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
     nextId = maxId + 1;
+    const budgets = payload.budgets ?? [];
     set({ 
       transactions: payload.transactions, 
       goals: payload.goals, 
@@ -215,6 +273,8 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
       splitwiseBalances: payload.splitwiseBalances,
       viewMode: payload.viewMode,
       budgetSplit: payload.budgetSplit || [50, 30, 20],
+      budgets,
+      hasBudgetSetup: budgets.length > 0,
     });
   },
   clearStore: () => {
@@ -229,6 +289,10 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
       viewMode: "personal",
       budgetSplit: [50, 30, 20],
       userCategoryType: {},
+      hasOnboarded: false,
+      isHydrated: false,
+      budgets: [],
+      hasBudgetSetup: false,
     });
   },
   userCategoryType: {},
@@ -244,7 +308,7 @@ export function selectExpenseAutopsy(transactions: Transaction[], monthKey: stri
   // Calculate previous month for MoM comparison
   const d = new Date(`${monthKey}-01`);
   d.setMonth(d.getMonth() - 1);
-  const prevMonthKey = d.toISOString().slice(0, 7);
+  const prevMonthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   const prevMonthTx = transactions.filter(t => t.date.startsWith(prevMonthKey) && t.type === 'expense');
 
   const totalExpenses = monthTx.reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
@@ -277,4 +341,60 @@ export function selectExpenseAutopsy(transactions: Transaction[], monthKey: stri
   };
 }
 
+/**
+ * Pure selector: compute per-category budget status for the given month (YYYY-MM).
+ * monthlyIncome is the total income for that month (used for percentage-type budgets).
+ */
+export function selectBudgetStatuses(
+  budgets: Budget[],
+  transactions: Transaction[],
+  monthlyIncome: number,
+  month: string  // YYYY-MM
+): BudgetStatus[] {
+  const expenses = transactions.filter(
+    (t) => t.type === 'expense' && t.date.startsWith(month)
+  );
+  const today = new Date();
+  const daysElapsed = today.getDate();
+  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const daysLeft = Math.max(daysInMonth - daysElapsed, 0);
 
+  return budgets.map((b) => {
+    const base =
+      b.type === 'percentage'
+        ? ((b.percentage ?? 0) / 100) * monthlyIncome
+        : (b.fixedAmount ?? 0);
+    const limitAmount = base + b.rolloverBalance;
+
+    const spent = expenses
+      .filter((t) => t.category === b.category)
+      .reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+
+    const remaining = Math.max(limitAmount - spent, 0);
+    const percentageUsed = limitAmount > 0 ? (spent / limitAmount) * 100 : 0;
+    const dailyAllowance = daysLeft > 0 ? remaining / daysLeft : 0;
+    const projectedSpend =
+      daysElapsed > 0 ? (spent / daysElapsed) * daysInMonth : 0;
+
+    const status: BudgetStatus['status'] =
+      percentageUsed >= 100
+        ? 'exceeded'
+        : percentageUsed >= 90
+        ? 'danger'
+        : percentageUsed >= (b.alertThreshold ?? 80)
+        ? 'warning'
+        : 'ok';
+
+    return {
+      category: b.category,
+      limitAmount,
+      spent,
+      remaining,
+      percentageUsed,
+      dailyAllowance,
+      projectedSpend,
+      status,
+      isInRedZone: status === 'danger' || status === 'exceeded',
+    };
+  });
+}

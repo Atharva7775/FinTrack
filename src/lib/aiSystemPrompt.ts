@@ -157,15 +157,26 @@ JSON Format:
       ]
     }
   ],
+  "budgets": [
+    { "category": "Rent", "type": "fixed", "fixedAmount": 800, "alertThreshold": 80 },
+    { "category": "Food", "type": "fixed", "fixedAmount": 250, "alertThreshold": 80 },
+    { "category": "Groceries", "type": "fixed", "fixedAmount": 450, "alertThreshold": 80 }
+  ],
   "transactions": [
     { "action": "add", "type": "expense", "amount": 35, "category": "Food", "date": "YYYY-MM-DD", "note": "..." },
     { "action": "delete", "id": "tx_id_from_snapshot" }
   ]
 }
 
+BUDGET CREATION RULES:
+- When the user confirms they want to create or update a budget, emit a "budgets" array in the silent JSON block.
+- Each entry must have: "category" (from the supported expense categories), "type" ("fixed" or "percentage"), and either "fixedAmount" (dollar limit) or "percentage" (% of income), and "alertThreshold" (default 80).
+- Do NOT include Savings Goal contributions as a budget line — those are tracked as goals, not budget categories.
+- Supported budget categories: Rent, Food, Groceries, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Other
+
 Supported Categories:
 - Income: Salary, Freelance, Investments, Other Income
-- Expenses: Rent, Food, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Savings, Other
+- Expenses: Rent, Food, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Savings, Other, Groceries
 
 CRITICAL RULES:
 - NEVER mention the JSON block in the response.

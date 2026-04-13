@@ -19,7 +19,7 @@ import {
   Download,
   Sheet,
 } from "lucide-react";
-import { useFinanceStore } from "@/store/financeStore";
+import { useFinanceStore, type Budget } from "@/store/financeStore";
 import { useChatStore } from "@/store/chatStore";
 import { useAuth } from "@/hooks/useAuth";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -46,6 +46,7 @@ import {
   renameChatSession,
   type StoredChatSession,
 } from "@/lib/chatSync";
+import { saveBudget } from "@/lib/supabaseSync";
 
 const SESSION_STORAGE_KEY = "fintrack_active_chat_session_id";
 
@@ -152,7 +153,7 @@ function stripJsonBlocks(text: string): string {
 }
 
 export default function ScenarioLab() {
-  const { transactions, goals, savingsBalance, viewMode, splitwiseBalances } = useFinanceStore();
+  const { transactions, goals, savingsBalance, viewMode, splitwiseBalances, budgets: storeBudgets, setBudgets } = useFinanceStore();
   const { user, isLoading: authLoading } = useAuth();
 
   const [sessions, setSessions] = useState<StoredChatSession[]>([]);
@@ -356,6 +357,7 @@ export default function ScenarioLab() {
       let updatedGoals = 0;
       let addedTx = 0;
       let deletedTx = 0;
+      let addedBudgets = 0;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -454,6 +456,35 @@ export default function ScenarioLab() {
             addedGoals++;
           }
 
+          // Handle Budgets
+          if (parsed && Array.isArray(parsed.budgets) && parsed.budgets.length > 0) {
+            const incoming: Budget[] = parsed.budgets
+              .filter((b: any) => typeof b.category === "string")
+              .map((b: any) => ({
+                id: crypto.randomUUID(),
+                category: b.category as Budget["category"],
+                type: (b.type === "percentage" ? "percentage" : "fixed") as Budget["type"],
+                percentage: b.type === "percentage" ? (Number(b.percentage) || 0) : undefined,
+                fixedAmount: b.type !== "percentage" ? (Number(b.fixedAmount) || 0) : undefined,
+                rolloverBalance: 0,
+                alertThreshold: Number(b.alertThreshold) || 80,
+              }));
+
+            // Merge with existing budgets (AI budgets override by category)
+            const existingByCategory = new Map(storeBudgets.map(b => [b.category, b]));
+            for (const nb of incoming) existingByCategory.set(nb.category, nb);
+            const merged = Array.from(existingByCategory.values());
+            setBudgets(merged);
+
+            // Persist to Supabase if configured
+            if (user?.email && isSupabaseConfigured()) {
+              for (const b of incoming) {
+                await saveBudget(user.email, b);
+              }
+            }
+            addedBudgets = incoming.length;
+          }
+
           // Handle Knowledge Base updates
           if (parsed && parsed.kb_update && user?.email) {
             const existingKb = knowledgeBase || createEmptyKnowledgeBase();
@@ -468,7 +499,7 @@ export default function ScenarioLab() {
         console.warn("FinTrack: parsing data from AI block failed", err);
       }
       const displayContent = stripJsonBlocks(content);
-      const totalChanges = addedGoals + updatedGoals + addedTx + deletedTx;
+      const totalChanges = addedGoals + updatedGoals + addedTx + deletedTx + addedBudgets;
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",

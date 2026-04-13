@@ -199,7 +199,7 @@ async function getUserEmail(telegramChatId: number): Promise<string | null> {
 async function buildFinancialSnapshot(userEmail: string) {
   const supabase = getServiceClient();
 
-  const [txRes, goalsRes, contribRes, settingsRes] = await Promise.all([
+  const [txRes, goalsRes, contribRes, settingsRes, budgetsRes] = await Promise.all([
     supabase
       .from("transactions")
       .select("id, type, amount, category, date, note, usd_amount")
@@ -218,6 +218,10 @@ async function buildFinancialSnapshot(userEmail: string) {
       .eq("user_email", userEmail)
       .eq("key", "savings_balance")
       .maybeSingle(),
+    supabase
+      .from("budgets")
+      .select("id, category, type, percentage, fixed_amount, alert_threshold")
+      .eq("user_email", userEmail),
   ]);
 
   const transactions: Array<{
@@ -291,6 +295,24 @@ async function buildFinancialSnapshot(userEmail: string) {
     return `  [${t.id}] ${t.date}  ${t.type.padEnd(7)}  ${sign}$${amt.padStart(9)}  ${t.category.padEnd(16)} "${t.note}"`;
   });
 
+  const budgets: Array<{
+    id: string; category: string; type: string; percentage?: number; fixedAmount?: number; alertThreshold: number;
+  }> = (budgetsRes.data ?? []).map((r: Record<string, unknown>) => ({
+    id: String(r.id),
+    category: String(r.category),
+    type: String(r.type),
+    percentage: r.percentage != null ? Number(r.percentage) : undefined,
+    fixedAmount: r.fixed_amount != null ? Number(r.fixed_amount) : undefined,
+    alertThreshold: Number(r.alert_threshold ?? 80),
+  }));
+
+  const budgetLines = budgets.map((b) => {
+    const limit = b.type === "percentage"
+      ? `${b.percentage}% of income`
+      : `$${b.fixedAmount?.toLocaleString() ?? "—"}/mo`;
+    return `  [${b.id}] ${b.category.padEnd(16)} ${limit}  (alert at ${b.alertThreshold}%)`;
+  });
+
   return {
     currentMonth,
     income,
@@ -300,6 +322,8 @@ async function buildFinancialSnapshot(userEmail: string) {
     savingsBalance,
     categories,
     goalLines,
+    budgetLines,
+    budgets,
     monthlyTrend,
     recentTxLines,
     transactions,
@@ -466,6 +490,28 @@ To delete a goal entirely, find its ID from ACTIVE GOALS and output:
 Confirm with the user what you deleted in one line.
 ──────────────────────────────────────────────────────────────────────────────
 
+─── MANAGING BUDGETS ─────────────────────────────────────────────────────────
+Valid budget categories: Rent, Food, Groceries, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Other
+To create or update a budget, output:
+{"action":"create_budget","budget":{"category":"Food","type":"fixed","fixedAmount":300,"alertThreshold":80}}
+For percentage-based: {"action":"create_budget","budget":{"category":"Food","type":"percentage","percentage":15,"alertThreshold":80}}
+To update an existing budget, find its ID from MONTHLY BUDGETS below:
+{"action":"update_budget","id":"<exact-id>","changes":{"fixedAmount":350,"alertThreshold":90}}
+To delete a budget:
+{"action":"delete_budget","id":"<exact-id>"}
+──────────────────────────────────────────────────────────────────────────────
+
+─── LOGGING GOAL CONTRIBUTIONS ───────────────────────────────────────────────
+When the user says they put money INTO a goal ("I contributed $500 to my emergency fund", "I saved $200 for my trip"), output:
+{"action":"log_goal_contribution","goalId":"<exact-id-from-ACTIVE GOALS>","amount":500,"date":"YYYY-MM-DD"}
+This logs the contribution AND updates the goal's current amount.
+──────────────────────────────────────────────────────────────────────────────
+
+─── UPDATING SAVINGS BALANCE ─────────────────────────────────────────────────
+When the user tells you their savings account balance ("I have $5,000 in savings", "update my savings to $12,000"), output:
+{"action":"update_savings_balance","amount":5000}
+──────────────────────────────────────────────────────────────────────────────
+
 ${kbLines.length > 0 ? `─── USER CONTEXT ───\n${kbLines.join("\n")}\n───────────────────\n` : ""}
 ─── FINANCIAL SNAPSHOT (${snapshot.currentMonth}) ───────────────────────────────────────
 Today:              ${today}
@@ -483,6 +529,9 @@ ${snapshot.monthlyTrend.map((m) => `  ${m.month}:  income $${m.income.toLocaleSt
 
 ACTIVE GOALS:
 ${snapshot.goalLines.join("\n") || "  None yet."}
+
+MONTHLY BUDGETS:
+${snapshot.budgetLines.join("\n") || "  No budgets set up yet."}
 
 RECENT TRANSACTIONS (last 20 — IDs required for edits/deletes):
 ${snapshot.recentTxLines.join("\n") || "  No transactions yet."}
@@ -694,6 +743,104 @@ async function executeAction(
       return null;
     }
     return `🗑️ Goal deleted.`;
+  }
+
+  if (action.action === "create_budget") {
+    const b = action.budget as Record<string, unknown>;
+    const id = crypto.randomUUID();
+    const { error } = await supabase.from("budgets").upsert(
+      {
+        id,
+        user_email: userEmail,
+        category: String(b.category),
+        type: String(b.type),
+        fixed_amount: b.fixedAmount != null ? Number(b.fixedAmount) : null,
+        percentage: b.percentage != null ? Number(b.percentage) : null,
+        rollover_balance: 0,
+        alert_threshold: Number(b.alertThreshold) || 80,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_email,category" }
+    );
+    if (error) {
+      console.error("Failed to create budget:", error);
+      return null;
+    }
+    const limit = b.type === "percentage" ? `${b.percentage}% of income` : `$${b.fixedAmount}/mo`;
+    return `💰 Budget set: ${b.category} → ${limit}`;
+  }
+
+  if (action.action === "update_budget") {
+    const id = String(action.id);
+    const changes = action.changes as Record<string, unknown>;
+    const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (changes.fixedAmount !== undefined) updatePayload.fixed_amount = Number(changes.fixedAmount);
+    if (changes.percentage !== undefined) updatePayload.percentage = Number(changes.percentage);
+    if (changes.alertThreshold !== undefined) updatePayload.alert_threshold = Number(changes.alertThreshold);
+    if (changes.type !== undefined) updatePayload.type = String(changes.type);
+    const { error } = await supabase.from("budgets").update(updatePayload).eq("id", id).eq("user_email", userEmail);
+    if (error) {
+      console.error("Failed to update budget:", error);
+      return null;
+    }
+    return `✏️ Budget updated.`;
+  }
+
+  if (action.action === "delete_budget") {
+    const id = String(action.id);
+    const { error } = await supabase.from("budgets").delete().eq("id", id).eq("user_email", userEmail);
+    if (error) {
+      console.error("Failed to delete budget:", error);
+      return null;
+    }
+    return `🗑️ Budget removed.`;
+  }
+
+  if (action.action === "log_goal_contribution") {
+    const goalId = String(action.goalId);
+    const amount = Number(action.amount);
+    const date = String(action.date ?? localDate());
+    // Insert contribution record
+    const { error: contribError } = await supabase.from("goal_contributions").insert({
+      id: crypto.randomUUID(),
+      goal_id: goalId,
+      amount,
+      date,
+    });
+    if (contribError) {
+      console.error("Failed to log goal contribution:", contribError);
+      return null;
+    }
+    // Update goal current_amount
+    const { data: goalData } = await supabase.from("goals").select("current_amount").eq("id", goalId).eq("user_email", userEmail).maybeSingle();
+    if (goalData) {
+      await supabase.from("goals").update({ current_amount: Number(goalData.current_amount) + amount }).eq("id", goalId).eq("user_email", userEmail);
+    }
+    // Also log as a Savings transaction
+    await supabase.from("transactions").insert({
+      id: crypto.randomUUID(),
+      user_email: userEmail,
+      type: "expense",
+      amount,
+      category: "Savings",
+      date,
+      note: `Goal contribution`,
+      source: "telegram_bot",
+    });
+    return `🎯 Logged $${amount} contribution to goal on ${date}.`;
+  }
+
+  if (action.action === "update_savings_balance") {
+    const amount = Number(action.amount);
+    const { error } = await supabase.from("app_settings").upsert(
+      { key: "savings_balance", user_email: userEmail, value: amount, updated_at: new Date().toISOString() },
+      { onConflict: "key,user_email" }
+    );
+    if (error) {
+      console.error("Failed to update savings balance:", error);
+      return null;
+    }
+    return `💵 Savings balance updated to $${amount.toLocaleString()}.`;
   }
 
   return null;

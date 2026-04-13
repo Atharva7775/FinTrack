@@ -46,7 +46,7 @@ import {
   renameChatSession,
   type StoredChatSession,
 } from "@/lib/chatSync";
-import { saveBudget } from "@/lib/supabaseSync";
+import { saveBudget, deleteBudgetRow } from "@/lib/supabaseSync";
 
 const SESSION_STORAGE_KEY = "fintrack_active_chat_session_id";
 
@@ -153,7 +153,7 @@ function stripJsonBlocks(text: string): string {
 }
 
 export default function ScenarioLab() {
-  const { transactions, goals, savingsBalance, viewMode, splitwiseBalances, budgets: storeBudgets, setBudgets } = useFinanceStore();
+  const { transactions, goals, savingsBalance, viewMode, splitwiseBalances, budgets: storeBudgets, setBudgets, addGoalContribution, setSavingsBalance, deleteBudget } = useFinanceStore();
   const { user, isLoading: authLoading } = useAuth();
 
   const [sessions, setSessions] = useState<StoredChatSession[]>([]);
@@ -355,9 +355,11 @@ export default function ScenarioLab() {
 
       let addedGoals = 0;
       let updatedGoals = 0;
+      let deletedGoals = 0;
       let addedTx = 0;
       let deletedTx = 0;
       let addedBudgets = 0;
+      let deletedBudgets = 0;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -365,8 +367,19 @@ export default function ScenarioLab() {
 
           // Handle Goals
           if (parsed && Array.isArray(parsed.goals)) {
-            parsed.goals.forEach((g: any) => {
-              if (typeof g.title !== "string") return;
+            for (const g of parsed.goals) {
+              if (typeof g.title !== "string") continue;
+
+              // Delete goal
+              if (g.action === "delete") {
+                const toDelete = goals.find((eg) => eg.title.toLowerCase() === g.title.toLowerCase());
+                if (toDelete) {
+                  await useFinanceStore.getState().deleteGoal(toDelete.id);
+                  deletedGoals++;
+                }
+                continue;
+              }
+
               const existingGoal = goals.find((eg) => eg.title.toLowerCase() === g.title.toLowerCase());
 
               if (existingGoal) {
@@ -405,7 +418,7 @@ export default function ScenarioLab() {
                 });
                 addedGoals++;
               }
-            });
+            }
           }
 
           // Handle Transactions
@@ -456,10 +469,43 @@ export default function ScenarioLab() {
             addedGoals++;
           }
 
+          // Log goal contribution (user puts money into a goal)
+          if (parsed && parsed.action === "logGoalContribution" && parsed.goalTitle && parsed.amount) {
+            const today = new Date().toISOString().split("T")[0];
+            const matchedGoal = goals.find((g) => g.title.toLowerCase() === String(parsed.goalTitle).toLowerCase());
+            if (matchedGoal) {
+              addGoalContribution(
+                matchedGoal.id,
+                Number(parsed.amount),
+                typeof parsed.date === "string" && parsed.date ? parsed.date : today
+              );
+              updatedGoals++;
+            }
+          }
+
+          // Update savings balance
+          if (parsed && parsed.action === "updateSavingsBalance" && parsed.amount !== undefined) {
+            setSavingsBalance(Number(parsed.amount));
+            updatedGoals++; // counted as a data update
+          }
+
           // Handle Budgets
           if (parsed && Array.isArray(parsed.budgets) && parsed.budgets.length > 0) {
+            // Handle budget deletions first
+            const budgetsToDelete = parsed.budgets.filter((b: any) => b.action === "delete" && typeof b.category === "string");
+            for (const bd of budgetsToDelete) {
+              const existing = storeBudgets.find((b) => b.category === bd.category);
+              if (existing) {
+                deleteBudget(existing.id);
+                if (user?.email && isSupabaseConfigured()) {
+                  await deleteBudgetRow(existing.id);
+                }
+                deletedBudgets++;
+              }
+            }
+
             const incoming: Budget[] = parsed.budgets
-              .filter((b: any) => typeof b.category === "string")
+              .filter((b: any) => b.action !== "delete" && typeof b.category === "string")
               .map((b: any) => ({
                 id: crypto.randomUUID(),
                 category: b.category as Budget["category"],
@@ -499,7 +545,7 @@ export default function ScenarioLab() {
         console.warn("FinTrack: parsing data from AI block failed", err);
       }
       const displayContent = stripJsonBlocks(content);
-      const totalChanges = addedGoals + updatedGoals + addedTx + deletedTx + addedBudgets;
+      const totalChanges = addedGoals + updatedGoals + deletedGoals + addedTx + deletedTx + addedBudgets + deletedBudgets;
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",

@@ -155,12 +155,13 @@ JSON Format:
         { "label": "Milestone Name", "amount": 250 },
         { "label": "Halfway there!", "amount": 500 }
       ]
-    }
+    },
+    { "action": "delete", "title": "Trip to Japan" }
   ],
   "budgets": [
     { "category": "Rent", "type": "fixed", "fixedAmount": 800, "alertThreshold": 80 },
     { "category": "Food", "type": "fixed", "fixedAmount": 250, "alertThreshold": 80 },
-    { "category": "Groceries", "type": "fixed", "fixedAmount": 450, "alertThreshold": 80 }
+    { "action": "delete", "category": "Groceries" }
   ],
   "transactions": [
     { "action": "add", "type": "expense", "amount": 35, "category": "Food", "date": "YYYY-MM-DD", "note": "..." },
@@ -168,11 +169,30 @@ JSON Format:
   ]
 }
 
+For logging a goal contribution (user says "I put $X into my [goal]"):
+{ "action": "logGoalContribution", "goalTitle": "Emergency Fund", "amount": 500, "date": "YYYY-MM-DD" }
+
+For updating savings balance (user says "I have $X in savings" or "my savings balance is $X"):
+{ "action": "updateSavingsBalance", "amount": 12000 }
+
 BUDGET CREATION RULES:
 - When the user confirms they want to create or update a budget, emit a "budgets" array in the silent JSON block.
 - Each entry must have: "category" (from the supported expense categories), "type" ("fixed" or "percentage"), and either "fixedAmount" (dollar limit) or "percentage" (% of income), and "alertThreshold" (default 80).
+- To DELETE a budget, include { "action": "delete", "category": "Food" } in the "budgets" array.
 - Do NOT include Savings Goal contributions as a budget line — those are tracked as goals, not budget categories.
 - Supported budget categories: Rent, Food, Groceries, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Other
+
+GOAL DELETION RULES:
+- To DELETE a goal entirely, include { "action": "delete", "title": "Goal Name" } in the "goals" array.
+- Only delete when the user explicitly asks to remove/delete/cancel the goal.
+
+GOAL CONTRIBUTION RULES:
+- When the user says they put money into a goal ("I contributed $500 to my emergency fund", "I added $200 to my Japan trip savings"), emit a logGoalContribution action.
+- This logs the contribution transaction AND updates the goal's current amount.
+
+SAVINGS BALANCE RULES:
+- When the user tells you their current savings account balance or asks to update it, emit an updateSavingsBalance action.
+- This updates the "Savings Balance" shown on the dashboard.
 
 Supported Categories:
 - Income: Salary, Freelance, Investments, Other Income

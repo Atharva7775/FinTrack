@@ -214,6 +214,28 @@ GOAL JSON FORMAT (silent, no markdown wrapper, at the very end):
   }]
 }
 
+BUDGET JSON FORMAT (silent, no markdown wrapper, at the very end — emit ONLY after user confirms):
+{
+  "budgets": [
+    { "category": "Food", "type": "fixed", "fixedAmount": 300, "alertThreshold": 80 },
+    { "category": "Rent", "type": "fixed", "fixedAmount": 1200, "alertThreshold": 90 },
+    { "action": "delete", "category": "Entertainment" }
+  ]
+}
+Supported budget categories: Rent, Food, Groceries, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Other
+For percentage-of-income budgets: { "category": "Food", "type": "percentage", "percentage": 15, "alertThreshold": 80 }
+Do NOT include goal contributions as a budget line — those are handled by goals.
+
+SPECIAL ACTIONS (silent, at the very end, one per response):
+Delete a goal:         { "action": "deleteGoal", "goalTitle": "Emergency Fund" }
+Log goal contribution: { "action": "logGoalContribution", "goalTitle": "Emergency Fund", "amount": 500, "date": "YYYY-MM-DD" }
+Update savings balance: { "action": "updateSavingsBalance", "amount": 12000 }
+
+RULES FOR SPECIAL ACTIONS:
+- Only emit deleteGoal when the user EXPLICITLY asks to delete/remove a goal.
+- Emit logGoalContribution when user says they put money INTO a goal ("I saved $X for my trip").
+- Emit updateSavingsBalance when user states their current savings account balance.
+
 JSON ACTION FORMAT (for shared goals or contribution updates — use when user confirms):
 \`\`\`json
 { 
@@ -260,8 +282,13 @@ ${ctx.optionalTrend
   .join('\n')}
 
 ACTIVE GOALS:
-${ctx.goals
-  .map(g => `  "${g.name}" — $${g.saved}/$${g.target} (${g.pctComplete}%), needs $${g.monthlyContribution}/mo, deadline ${g.deadline}`)
-  .join('\n')}
+${ctx.goals.length > 0
+  ? ctx.goals.map(g => `  "${g.name}" — $${g.saved}/$${g.target} (${g.pctComplete}%), needs $${g.monthlyContribution}/mo, deadline ${g.deadline}`).join('\n')
+  : '  No goals set up yet.'}
+
+MONTHLY BUDGETS:
+${ctx.budgets && ctx.budgets.length > 0
+  ? ctx.budgets.map(b => `  ${b.category.padEnd(16)} $${(b.limitAmount ?? 0).toLocaleString()}/mo (${b.percentageUsed ?? 0}% used, ${b.status})`).join('\n')
+  : '  No budgets set up yet.'}
 ───────────────────────────────────────────────`
 }

@@ -143,6 +143,8 @@ function greetingMessage(displayName?: string | null): ChatMessage {
 }
 
 /** Extract every complete, balanced JSON object from a string. */
+const KNOWN_ACTION_KEYS = new Set(['goals', 'transactions', 'budgets', 'action', 'kb_update']);
+
 function extractAllJsonObjects(text: string): Record<string, unknown>[] {
   const results: Record<string, unknown>[] = [];
   let i = 0;
@@ -157,13 +159,35 @@ function extractAllJsonObjects(text: string): Record<string, unknown>[] {
           if (depth === 0) { end = j; break; }
         }
       }
-      try { results.push(JSON.parse(text.slice(i, end + 1))); } catch { /* skip malformed */ }
+      try {
+        const obj = JSON.parse(text.slice(i, end + 1)) as Record<string, unknown>;
+        // Only keep objects that contain recognized action keys (ignore JSON in AI prose)
+        if (Object.keys(obj).some(k => KNOWN_ACTION_KEYS.has(k))) {
+          results.push(obj);
+        }
+      } catch { /* skip malformed */ }
       i = end + 1;
     } else {
       i++;
     }
   }
   return results;
+}
+
+// Merge action objects: concat arrays instead of overwriting (prevents later {} wiping earlier arrays)
+function mergeActionObjects(objects: Record<string, unknown>[]): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+  for (const obj of objects) {
+    for (const [k, v] of Object.entries(obj)) {
+      if (Array.isArray(v) && Array.isArray(merged[k])) {
+        (merged[k] as unknown[]).push(...v);
+      } else if (!(k in merged)) {
+        merged[k] = v;
+      }
+      // Scalars: first writer wins; arrays: concat
+    }
+  }
+  return merged;
 }
 
 function stripJsonBlocks(text: string): string {
@@ -390,10 +414,10 @@ export default function ScenarioLab() {
         // causing JSON.parse to throw whenever kb_update was also emitted.
         const allObjects = extractAllJsonObjects(content);
 
-        // Merge all non-kb_update objects into one parsed bag
-        const parsed: Record<string, unknown> = allObjects
-          .filter((o) => !o.kb_update)
-          .reduce((acc, o) => ({ ...acc, ...o }), {});
+        // Merge all non-kb_update objects — arrays are concatenated, not overwritten
+        const parsed: Record<string, unknown> = mergeActionObjects(
+          allObjects.filter((o) => !o.kb_update)
+        );
 
         // kb_update is handled separately below
         const kbUpdateObj = allObjects.find((o) => o.kb_update);
@@ -402,16 +426,6 @@ export default function ScenarioLab() {
           if (parsed && Array.isArray(parsed.goals)) {
             for (const g of parsed.goals) {
               if (typeof g.title !== "string") continue;
-
-              // Delete goal
-              if (g.action === "delete") {
-                const toDelete = goals.find((eg) => eg.title.toLowerCase() === g.title.toLowerCase());
-                if (toDelete) {
-                  await useFinanceStore.getState().deleteGoal(toDelete.id);
-                  deletedGoals++;
-                }
-                continue;
-              }
 
               const existingGoal = goals.find((eg) => eg.title.toLowerCase() === g.title.toLowerCase());
 
@@ -500,6 +514,15 @@ export default function ScenarioLab() {
               members: g.members || []
             });
             addedGoals++;
+          }
+
+          // Delete a goal by title (safe top-level action — avoids accidental fires from goals array)
+          if (parsed && parsed.action === "deleteGoal" && typeof parsed.goalTitle === "string") {
+            const toDelete = goals.find((g) => g.title.toLowerCase() === parsed.goalTitle!.toString().toLowerCase());
+            if (toDelete) {
+              await useFinanceStore.getState().deleteGoal(toDelete.id);
+              deletedGoals++;
+            }
           }
 
           // Log goal contribution (user puts money into a goal)

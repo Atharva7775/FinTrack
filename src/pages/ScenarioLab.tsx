@@ -367,32 +367,40 @@ export default function ScenarioLab() {
               if (typeof g.title !== "string") return;
               const existingGoal = goals.find((eg) => eg.title.toLowerCase() === g.title.toLowerCase());
 
-              let recalculatedTarget = 0;
-              const expenseSectionRegex = new RegExp(
-                `(?:${g.title}|trip|goal)[^\\n]*:?((?:\\n\\* [^\\n]+\\$[0-9,.]+)+)`,
-                "i"
-              );
-              const match = content.match(expenseSectionRegex);
-              if (match?.[1]) {
-                const amounts = Array.from(match[1].matchAll(/\$([0-9,.]+)/g)).map(
-                  (m) => Number(m[1].replace(/,/g, ""))
-                );
-                if (amounts.length > 0) recalculatedTarget = amounts.reduce((a, b) => a + b, 0);
-              }
-
-              const goalData = {
-                title: g.title,
-                targetAmount: recalculatedTarget > 0 ? recalculatedTarget : Number(g.targetAmount) || 0,
-                currentAmount: Number(g.currentAmount) || 0,
-                deadline: typeof g.deadline === "string" ? g.deadline : "",
-                monthlyContribution: Number(g.monthlyContribution) || 0,
-              };
-
               if (existingGoal) {
-                useFinanceStore.getState().updateGoal(existingGoal.id, goalData);
+                // Only update fields the AI explicitly provided — never reset existing values to 0
+                const updates: Partial<typeof existingGoal> = {};
+                if (g.monthlyContribution !== undefined) updates.monthlyContribution = Number(g.monthlyContribution) || 0;
+                if (g.targetAmount !== undefined) {
+                  let recalculatedTarget = 0;
+                  const expenseSectionRegex = new RegExp(
+                    `(?:${g.title}|trip|goal)[^\\n]*:?((?:\\n\\* [^\\n]+\\$[0-9,.]+)+)`,
+                    "i"
+                  );
+                  const match = content.match(expenseSectionRegex);
+                  if (match?.[1]) {
+                    const amounts = Array.from(match[1].matchAll(/\$([0-9,.]+)/g)).map(
+                      (m) => Number(m[1].replace(/,/g, ""))
+                    );
+                    if (amounts.length > 0) recalculatedTarget = amounts.reduce((a, b) => a + b, 0);
+                  }
+                  updates.targetAmount = recalculatedTarget > 0 ? recalculatedTarget : Number(g.targetAmount) || 0;
+                }
+                if (g.currentAmount !== undefined) updates.currentAmount = Number(g.currentAmount) || 0;
+                if (typeof g.deadline === "string" && g.deadline) updates.deadline = g.deadline;
+                useFinanceStore.getState().updateGoal(existingGoal.id, updates);
                 updatedGoals++;
               } else {
-                useFinanceStore.getState().addGoal(goalData);
+                useFinanceStore.getState().addGoal({
+                  title: g.title,
+                  targetAmount: Number(g.targetAmount) || 0,
+                  currentAmount: Number(g.currentAmount) || 0,
+                  deadline: typeof g.deadline === "string" ? g.deadline : "",
+                  monthlyContribution: Number(g.monthlyContribution) || 0,
+                  type: g.type || 'savings',
+                  isShared: false,
+                  members: [],
+                });
                 addedGoals++;
               }
             });
@@ -418,11 +426,17 @@ export default function ScenarioLab() {
           }
 
           // Handle Custom Actions (Cut Plan & Shared Goals)
-          if (parsed && parsed.action === "updateGoalContribution" && parsed.goalId && parsed.newMonthlyAmount) {
-            useFinanceStore.getState().updateGoal(parsed.goalId, {
-              monthlyContribution: Number(parsed.newMonthlyAmount)
-            });
-            updatedGoals++;
+          if (parsed && parsed.action === "updateGoalContribution" && parsed.newMonthlyAmount) {
+            // Match by title if provided (AI doesn't know real UUIDs), fall back to goalId
+            const matchedGoal = parsed.goalTitle
+              ? goals.find((g) => g.title.toLowerCase() === String(parsed.goalTitle).toLowerCase())
+              : goals.find((g) => g.id === parsed.goalId);
+            if (matchedGoal) {
+              useFinanceStore.getState().updateGoal(matchedGoal.id, {
+                monthlyContribution: Number(parsed.newMonthlyAmount)
+              });
+              updatedGoals++;
+            }
           }
 
           if (parsed && parsed.action === "createGoal" && parsed.goal) {

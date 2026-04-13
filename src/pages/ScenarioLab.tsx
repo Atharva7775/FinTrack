@@ -142,6 +142,30 @@ function greetingMessage(displayName?: string | null): ChatMessage {
   return { id: `greet-${Date.now()}`, role: "assistant", content: buildGreeting(displayName) };
 }
 
+/** Extract every complete, balanced JSON object from a string. */
+function extractAllJsonObjects(text: string): Record<string, unknown>[] {
+  const results: Record<string, unknown>[] = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "{") {
+      let depth = 0;
+      let end = i;
+      for (let j = i; j < text.length; j++) {
+        if (text[j] === "{") depth++;
+        else if (text[j] === "}") {
+          depth--;
+          if (depth === 0) { end = j; break; }
+        }
+      }
+      try { results.push(JSON.parse(text.slice(i, end + 1))); } catch { /* skip malformed */ }
+      i = end + 1;
+    } else {
+      i++;
+    }
+  }
+  return results;
+}
+
 function stripJsonBlocks(text: string): string {
   return text
     .replace(/\{[\s\S]*?"kb_update"[\s\S]*?\}(?:\s*\})?/g, "")
@@ -361,9 +385,18 @@ export default function ScenarioLab() {
       let addedBudgets = 0;
       let deletedBudgets = 0;
       try {
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
+        // Extract every balanced JSON object from the AI response.
+        // Before this fix, a greedy regex merged all blocks into one invalid string,
+        // causing JSON.parse to throw whenever kb_update was also emitted.
+        const allObjects = extractAllJsonObjects(content);
+
+        // Merge all non-kb_update objects into one parsed bag
+        const parsed: Record<string, unknown> = allObjects
+          .filter((o) => !o.kb_update)
+          .reduce((acc, o) => ({ ...acc, ...o }), {});
+
+        // kb_update is handled separately below
+        const kbUpdateObj = allObjects.find((o) => o.kb_update);
 
           // Handle Goals
           if (parsed && Array.isArray(parsed.goals)) {
@@ -532,15 +565,14 @@ export default function ScenarioLab() {
           }
 
           // Handle Knowledge Base updates
-          if (parsed && parsed.kb_update && user?.email) {
+          if (kbUpdateObj && user?.email) {
             const existingKb = knowledgeBase || createEmptyKnowledgeBase();
-            const updatedKb = mergeKnowledgeBaseUpdate(existingKb, parsed.kb_update);
+            const updatedKb = mergeKnowledgeBaseUpdate(existingKb, kbUpdateObj.kb_update as Record<string, unknown>);
             setKnowledgeBase(updatedKb);
             if (supabaseConfigured) {
               saveKnowledgeBase(user.email, updatedKb);
             }
           }
-        }
       } catch (err) {
         console.warn("FinTrack: parsing data from AI block failed", err);
       }

@@ -47,6 +47,7 @@ import {
   type StoredChatSession,
 } from "@/lib/chatSync";
 import { saveBudget, deleteBudgetRow } from "@/lib/supabaseSync";
+import { getCurrentMonthKey } from "@/lib/utils";
 
 const SESSION_STORAGE_KEY = "fintrack_active_chat_session_id";
 
@@ -560,11 +561,13 @@ export default function ScenarioLab() {
               }
             }
 
+            const incomingMonth = getCurrentMonthKey();
             const incoming: Budget[] = parsed.budgets
               .filter((b: any) => b.action !== "delete" && typeof b.category === "string")
               .map((b: any) => ({
                 id: crypto.randomUUID(),
                 category: b.category as Budget["category"],
+                month: incomingMonth,
                 type: (b.type === "percentage" ? "percentage" : "fixed") as Budget["type"],
                 percentage: b.type === "percentage" ? (Number(b.percentage) || 0) : undefined,
                 fixedAmount: b.type !== "percentage" ? (Number(b.fixedAmount) || 0) : undefined,
@@ -572,10 +575,12 @@ export default function ScenarioLab() {
                 alertThreshold: Number(b.alertThreshold) || 80,
               }));
 
-            // Merge with existing budgets (AI budgets override by category)
-            const existingByCategory = new Map(storeBudgets.map(b => [b.category, b]));
-            for (const nb of incoming) existingByCategory.set(nb.category, nb);
-            const merged = Array.from(existingByCategory.values());
+            // Merge with existing budgets — AI budgets for current month override by category
+            const otherMonths = storeBudgets.filter(b => b.month !== incomingMonth);
+            const currentMonthExisting = storeBudgets.filter(b => b.month === incomingMonth);
+            const byCategory = new Map(currentMonthExisting.map(b => [b.category, b]));
+            for (const nb of incoming) byCategory.set(nb.category, nb);
+            const merged = [...otherMonths, ...Array.from(byCategory.values())];
             setBudgets(merged);
 
             // Persist to Supabase if configured

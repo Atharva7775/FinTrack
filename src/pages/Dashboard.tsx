@@ -50,7 +50,7 @@ export default function Dashboard() {
     .reduce((sum, t) => sum + t.amount, 0);
   const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
   const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
-  const alertBudgets = selectBudgetStatuses(budgets, transactions, monthlyIncome, currentKey)
+  const alertBudgets = selectBudgetStatuses(budgets.filter(b => b.month === currentKey), transactions, monthlyIncome, currentKey)
     .filter(bs => bs.status === 'warning' || bs.status === 'danger' || bs.status === 'exceeded');
   const defaultMonth = availableMonths.includes(currentKey) ? currentKey : availableMonths[availableMonths.length - 1] ?? currentKey;
   const [selectedMonthKey, setSelectedMonthKey] = useState(defaultMonth);

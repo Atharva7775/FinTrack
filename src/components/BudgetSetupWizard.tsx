@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useFinanceStore, expenseCategories, type Budget, type Category } from "@/store/financeStore";
+import { getCurrentMonthKey } from "@/lib/utils";
 import { saveBudget } from "@/lib/supabaseSync";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
@@ -65,11 +66,14 @@ function templateToBudgets(allocations: Partial<Record<Category, number>>): Wiza
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** YYYY-MM – which month's budgets are being set up. Defaults to current month. */
+  month?: string;
 }
 
-export function BudgetSetupWizard({ open, onClose }: Props) {
+export function BudgetSetupWizard({ open, onClose, month: monthProp }: Props) {
+  const targetMonth = monthProp ?? getCurrentMonthKey();
   const { user } = useAuth();
-  const { setBudgets, transactions, goals } = useFinanceStore();
+  const { budgets: storeBudgets, setBudgets, transactions, goals } = useFinanceStore();
   const [step, setStep] = useState(0);
   const [selectedTemplate, setSelectedTemplate] = useState<number | null>(null);
   const [budgets, setBudgetsLocal] = useState<WizardBudget[]>([]);
@@ -129,6 +133,7 @@ export function BudgetSetupWizard({ open, onClose }: Props) {
         const draft: Budget = {
           id: crypto.randomUUID(),
           category: wb.category,
+          month: targetMonth,
           type: wb.type,
           percentage: wb.percentage,
           fixedAmount: wb.fixedAmount,
@@ -138,8 +143,10 @@ export function BudgetSetupWizard({ open, onClose }: Props) {
         const result = await saveBudget(userEmail, draft);
         saved.push(result ?? draft);
       }
-      setBudgets(saved);
-      toast.success(`Saved ${saved.length} budget${saved.length !== 1 ? "s" : ""}!`);
+      // Merge: keep budgets from other months, replace the target month
+      const otherMonths = storeBudgets.filter(b => b.month !== targetMonth);
+      setBudgets([...otherMonths, ...saved]);
+      toast.success(`Saved ${saved.length} budget${saved.length !== 1 ? "s" : ""} for ${targetMonth}!`);
       onClose();
     } catch {
       toast.error("Failed to save budgets. Please try again.");

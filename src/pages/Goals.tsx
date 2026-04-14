@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, Trash2, Target, Wallet, Zap, LogIn, PiggyBank, Settings2, TrendingUp } from "lucide-react";
+import { Plus, Trash2, Target, Wallet, Zap, LogIn, PiggyBank, Settings2, TrendingUp, ChevronLeft, ChevronRight, Copy } from "lucide-react";
 import { useFinanceStore, type Goal, type GoalMilestone, selectBudgetStatuses, type Budget, type BudgetStatus } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
 import { useBudgetAlerts } from "@/hooks/useBudgetAlerts";
@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { getCurrentMonthKey } from "@/lib/utils";
+import { getCurrentMonthKey, getLastNMonths, getMonthLabel, getPrevMonthKey } from "@/lib/utils";
 import { GoalOptimizerModal } from "@/components/GoalOptimizerModal";
 import { saveBudget, deleteBudgetRow } from "@/lib/supabaseSync";
 import { toast } from "sonner";
@@ -169,7 +169,7 @@ function EditBudgetDialog({ budget, onClose, onSave }: EditBudgetDialogProps) {
   );
 }
 export default function Goals() {
-  const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution, budgets, deleteBudget, hasBudgetSetup, transactions } = useFinanceStore();
+  const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution, budgets, deleteBudget, updateBudget, setBudgets, transactions } = useFinanceStore();
   const { user, isLoading: authLoading } = useAuth();
   const [open, setOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -188,16 +188,27 @@ export default function Goals() {
   const [contributionDate, setContributionDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [optimizerGoalId, setOptimizerGoalId] = useState<string | null>(null);
   const currentMonth = getCurrentMonthKey();
+  const [selectedBudgetMonth, setSelectedBudgetMonth] = useState(currentMonth);
+  const isCurrentMonth = selectedBudgetMonth === currentMonth;
+  const monthOptions = getLastNMonths(12).reverse(); // oldest first → newest last
 
   useBudgetAlerts();
 
+  // Income and status for the selected budget month
   const rawMonthlyIncome = transactions
-    .filter(t => t.type === 'income' && t.date.startsWith(currentMonth))
+    .filter(t => t.type === 'income' && t.date.startsWith(selectedBudgetMonth))
     .reduce((sum, t) => sum + t.amount, 0);
   const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
   const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
 
-  const budgetStatuses = selectBudgetStatuses(budgets, transactions, monthlyIncome, currentMonth);
+  const monthBudgets = budgets.filter(b => b.month === selectedBudgetMonth);
+  const budgetStatuses = selectBudgetStatuses(monthBudgets, transactions, monthlyIncome, selectedBudgetMonth);
+
+  // For "copy from last month" functionality
+  const prevMonthKey = getPrevMonthKey();
+  const prevMonthBudgets = budgets.filter(b => b.month === prevMonthKey);
+
+  const hasBudgetsForSelectedMonth = monthBudgets.length > 0;
 
   if (!authLoading && !user) {
     return (
@@ -233,6 +244,25 @@ export default function Goals() {
     setContributionDate(new Date().toISOString().slice(0, 10));
   };
 
+  const handleCopyFromLastMonth = async () => {
+    if (!user?.email || prevMonthBudgets.length === 0) return;
+    const targetMonth = selectedBudgetMonth;
+    const copied: Budget[] = [];
+    for (const b of prevMonthBudgets) {
+      const draft: Budget = {
+        ...b,
+        id: crypto.randomUUID(),
+        month: targetMonth,
+        rolloverBalance: 0,
+      };
+      const result = await saveBudget(user.email, draft);
+      copied.push(result ?? draft);
+    }
+    const otherMonths = budgets.filter(bx => bx.month !== targetMonth);
+    useFinanceStore.getState().setBudgets([...otherMonths, ...copied]);
+    toast.success(`Copied ${copied.length} budgets from ${getMonthLabel(prevMonthKey)} to ${getMonthLabel(targetMonth)}`);
+  };
+
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -241,11 +271,13 @@ export default function Goals() {
           <p className="text-muted-foreground text-sm mt-1">Manage your monthly spending budgets and savings targets</p>
         </div>
         <div className="flex gap-2">
-          <CursorTooltip content={hasBudgetSetup ? "Reconfigure your monthly budgets." : "Set up your monthly spending budgets with a guided wizard."}>
-            <Button variant={hasBudgetSetup ? "outline" : "default"} onClick={() => setWizardOpen(true)} className="gap-2">
-              <PiggyBank className="h-4 w-4" /> {hasBudgetSetup ? "Edit Budgets" : "Set Up Budgets"}
-            </Button>
-          </CursorTooltip>
+          {isCurrentMonth && (
+            <CursorTooltip content={hasBudgetsForSelectedMonth ? "Reconfigure this month's budgets." : "Set up monthly spending budgets with a guided wizard."}>
+              <Button variant={hasBudgetsForSelectedMonth ? "outline" : "default"} onClick={() => setWizardOpen(true)} className="gap-2">
+                <PiggyBank className="h-4 w-4" /> {hasBudgetsForSelectedMonth ? "Edit Budgets" : "Set Up Budgets"}
+              </Button>
+            </CursorTooltip>
+          )}
           <CursorTooltip content="Create a new savings goal (e.g. emergency fund, vacation).">
             <Button variant="outline" onClick={() => setOpen(true)} className="gap-2">
               <Plus className="h-4 w-4" /> New Goal
@@ -255,68 +287,133 @@ export default function Goals() {
       </div>
 
       {/* Section A: Monthly Budgets */}
-      {hasBudgetSetup && budgetStatuses.length > 0 ? (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-display font-semibold text-foreground flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-primary" /> Monthly Budgets
-            </h2>
-            <span className="text-xs text-muted-foreground">{currentMonth}</span>
+      <div className="space-y-4">
+        {/* Month selector */}
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-lg font-display font-semibold text-foreground flex items-center gap-2">
+            <TrendingUp className="h-5 w-5 text-primary" /> Monthly Budgets
+          </h2>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => {
+                const idx = monthOptions.findIndex(m => m.key === selectedBudgetMonth);
+                if (idx > 0) setSelectedBudgetMonth(monthOptions[idx - 1].key);
+              }}
+              disabled={monthOptions[0]?.key === selectedBudgetMonth}
+              className="p-1.5 rounded-lg hover:bg-accent transition-colors disabled:opacity-30"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <select
+              value={selectedBudgetMonth}
+              onChange={e => setSelectedBudgetMonth(e.target.value)}
+              className="text-sm font-medium bg-background border border-border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              {monthOptions.map(m => (
+                <option key={m.key} value={m.key}>
+                  {getMonthLabel(m.key)}{m.key === currentMonth ? " (Current)" : ""}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                const idx = monthOptions.findIndex(m => m.key === selectedBudgetMonth);
+                if (idx < monthOptions.length - 1) setSelectedBudgetMonth(monthOptions[idx + 1].key);
+              }}
+              disabled={monthOptions[monthOptions.length - 1]?.key === selectedBudgetMonth}
+              className="p-1.5 rounded-lg hover:bg-accent transition-colors disabled:opacity-30"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {budgetStatuses.map((bs) => {
-              const budget = budgets.find(b => b.category === bs.category)!;
-              return (
-                <motion.div key={bs.category} variants={item} className="glass-card rounded-2xl p-5">
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-display font-semibold text-foreground">{bs.category}</span>
-                        {statusBadge(bs.status)}
+        </div>
+
+        {hasBudgetsForSelectedMonth && budgetStatuses.length > 0 ? (
+          <>
+            {!isCurrentMonth && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-muted/40 border border-border text-xs text-muted-foreground">
+                <span className="text-base">📅</span>
+                Viewing history for <strong className="text-foreground">{getMonthLabel(selectedBudgetMonth)}</strong>.
+                Budgets are read-only for past months.
+              </div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {budgetStatuses.map((bs) => {
+                const budget = monthBudgets.find(b => b.category === bs.category)!;
+                return (
+                  <motion.div key={bs.category} variants={item} className="glass-card rounded-2xl p-5">
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-display font-semibold text-foreground">{bs.category}</span>
+                          {statusBadge(bs.status)}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">${bs.spent.toFixed(0)} / ${bs.limitAmount.toFixed(0)}</p>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-0.5">${bs.spent.toFixed(0)} / ${bs.limitAmount.toFixed(0)}</p>
+                      {isCurrentMonth && (
+                        <div className="flex gap-1">
+                          <button onClick={() => setEditBudget(budget)} className="p-1.5 rounded-lg hover:bg-accent transition-colors">
+                            <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
+                          </button>
+                          <button onClick={() => { deleteBudget(budget.id); toast.success(`Removed ${bs.category} budget`); }} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
+                            <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <div className="flex gap-1">
-                      <button onClick={() => setEditBudget(budget)} className="p-1.5 rounded-lg hover:bg-accent transition-colors">
-                        <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
-                      </button>
-                      <button onClick={() => { deleteBudget(budget.id); toast.success(`Removed ${bs.category} budget`); }} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
-                        <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                      </button>
+                    <div className="w-full h-2 rounded-full bg-muted overflow-hidden mb-2">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{ width: `${Math.min(bs.percentageUsed, 100)}%`, backgroundColor: statusColor(bs.status) }}
+                      />
                     </div>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-muted overflow-hidden mb-2">
-                    <div
-                      className={`h-full rounded-full transition-all ${statusColor(bs.status)}`}
-                      style={{ width: `${Math.min(bs.percentageUsed, 100)}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>${bs.remaining.toFixed(0)} left</span>
-                    <span>{bs.percentageUsed.toFixed(0)}% used</span>
-                  </div>
-                  {budget.rolloverBalance !== 0 && (
-                    <p className="text-xs mt-2 text-primary/70">
-                      {budget.rolloverBalance > 0 ? `+$${budget.rolloverBalance.toFixed(0)} rollover from last month` : `$${Math.abs(budget.rolloverBalance).toFixed(0)} overspend carried forward`}
-                    </p>
-                  )}
-                </motion.div>
-              );
-            })}
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>${bs.remaining.toFixed(0)} left</span>
+                      <span>{bs.percentageUsed.toFixed(0)}% used</span>
+                    </div>
+                    {isCurrentMonth && bs.dailyAllowance > 0 && (
+                      <p className="text-xs mt-1.5 text-muted-foreground">${bs.dailyAllowance.toFixed(0)}/day remaining</p>
+                    )}
+                    {budget.rolloverBalance !== 0 && (
+                      <p className="text-xs mt-2 text-primary/70">
+                        {budget.rolloverBalance > 0 ? `+$${budget.rolloverBalance.toFixed(0)} rollover from last month` : `$${Math.abs(budget.rolloverBalance).toFixed(0)} overspend carried forward`}
+                      </p>
+                    )}
+                  </motion.div>
+                );
+              })}
+            </div>
+          </>
+        ) : isCurrentMonth ? (
+          <div className="glass-card rounded-2xl p-8 flex flex-col items-center gap-4 text-center border-dashed border-2 border-primary/20">
+            <PiggyBank className="h-12 w-12 text-primary/40" />
+            <div>
+              <h3 className="font-display font-semibold text-foreground">No budget set up for {getMonthLabel(currentMonth)}</h3>
+              <p className="text-sm text-muted-foreground mt-1 max-w-xs">Set up category budgets to track your spending and get smart alerts.</p>
+            </div>
+            <div className="flex gap-2 flex-wrap justify-center">
+              <Button onClick={() => setWizardOpen(true)} className="gap-2">
+                <PiggyBank className="h-4 w-4" /> Set Up Budgets
+              </Button>
+              {prevMonthBudgets.length > 0 && (
+                <CursorTooltip content={`Copy all ${prevMonthBudgets.length} budget categories from ${getMonthLabel(prevMonthKey)}`}>
+                  <Button variant="outline" onClick={handleCopyFromLastMonth} className="gap-2">
+                    <Copy className="h-4 w-4" /> Copy from {getMonthLabel(prevMonthKey)}
+                  </Button>
+                </CursorTooltip>
+              )}
+            </div>
           </div>
-        </div>
-      ) : !hasBudgetSetup ? (
-        <div className="glass-card rounded-2xl p-8 flex flex-col items-center gap-4 text-center border-dashed border-2 border-primary/20">
-          <PiggyBank className="h-12 w-12 text-primary/40" />
-          <div>
-            <h3 className="font-display font-semibold text-foreground">No budget set up yet</h3>
-            <p className="text-sm text-muted-foreground mt-1 max-w-xs">Set up category budgets to track your spending and get smart alerts.</p>
+        ) : (
+          <div className="glass-card rounded-2xl p-8 flex flex-col items-center gap-4 text-center border-dashed border-2 border-border/40">
+            <span className="text-4xl">📅</span>
+            <div>
+              <h3 className="font-display font-semibold text-foreground">No budget was set for {getMonthLabel(selectedBudgetMonth)}</h3>
+              <p className="text-sm text-muted-foreground mt-1 max-w-xs">No budget categories were configured for this month.</p>
+            </div>
           </div>
-          <Button onClick={() => setWizardOpen(true)} className="gap-2">
-            <PiggyBank className="h-4 w-4" /> Set Up Budgets
-          </Button>
-        </div>
-      ) : null}
+        )}
+      </div>
 
       {/* Section B: Savings Goals */}
       <div className="space-y-4">
@@ -525,8 +622,23 @@ export default function Goals() {
         </DialogContent>
       </Dialog>
 
-      <BudgetSetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
-      {editBudget && <EditBudgetDialog budget={editBudget} onClose={() => setEditBudget(null)} />}
+      <BudgetSetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} month={selectedBudgetMonth} />
+      {editBudget && (
+        <EditBudgetDialog
+          budget={editBudget}
+          onClose={() => setEditBudget(null)}
+          onSave={async (updated) => {
+            if (user?.email) {
+              const result = await saveBudget(user.email, updated);
+              updateBudget(updated.id, result ?? updated);
+            } else {
+              updateBudget(updated.id, updated);
+            }
+            setEditBudget(null);
+            toast.success(`${updated.category} budget updated`);
+          }}
+        />
+      )}
     </motion.div>
   );
 }

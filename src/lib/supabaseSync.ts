@@ -21,7 +21,7 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
       supabase.from("goals").select("id, title, target_amount, current_amount, deadline, monthly_contribution").eq("user_email", userEmail).order("created_at", { ascending: true }),
       supabase.from("goal_contributions").select("goal_id, amount, date").order("date", { ascending: false }),
       supabase.from("app_settings").select("key, value").in("key", Object.values(SETTINGS_KEYS)).eq("user_email", userEmail),
-      supabase.from("budgets").select("id, category, type, percentage, fixed_amount, rollover_balance, alert_threshold").eq("user_email", userEmail).order("created_at", { ascending: true }),
+      supabase.from("budgets").select("id, category, month, type, percentage, fixed_amount, rollover_balance, alert_threshold").eq("user_email", userEmail).order("created_at", { ascending: true }),
     ]);
 
     if (txRes.error) throw txRes.error;
@@ -79,9 +79,11 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
       budgetSplit = budgetRow.value as [number, number, number];
     }
 
+    const currentMonth = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
     const budgets: Budget[] = (budgetsRes.data || []).map((r) => ({
       id: r.id,
       category: r.category as Budget['category'],
+      month: r.month || currentMonth,
       type: r.type as Budget['type'],
       percentage: r.percentage != null ? Number(r.percentage) : undefined,
       fixedAmount: r.fixed_amount != null ? Number(r.fixed_amount) : undefined,
@@ -242,6 +244,7 @@ export async function saveBudget(userEmail: string, budget: Budget): Promise<Bud
       id: budget.id,
       user_email: userEmail,
       category: budget.category,
+      month: budget.month,
       type: budget.type,
       percentage: budget.percentage ?? null,
       fixed_amount: budget.fixedAmount ?? null,
@@ -251,13 +254,14 @@ export async function saveBudget(userEmail: string, budget: Budget): Promise<Bud
     };
     const { data, error } = await supabase
       .from("budgets")
-      .upsert(row, { onConflict: "user_email,category" })
-      .select("id, category, type, percentage, fixed_amount, rollover_balance, alert_threshold")
+      .upsert(row, { onConflict: "user_email,category,month" })
+      .select("id, category, month, type, percentage, fixed_amount, rollover_balance, alert_threshold")
       .single();
     if (error) throw error;
     return {
       id: data.id,
       category: data.category as Budget['category'],
+      month: data.month,
       type: data.type as Budget['type'],
       percentage: data.percentage != null ? Number(data.percentage) : undefined,
       fixedAmount: data.fixed_amount != null ? Number(data.fixed_amount) : undefined,

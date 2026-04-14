@@ -29,7 +29,7 @@ export function useBudgetAlerts() {
     const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
     const monthlyIncome = Math.max(rawIncome - totalGoalSavings, 0);
 
-    const statuses = selectBudgetStatuses(budgets, transactions, monthlyIncome, month);
+    const statuses = selectBudgetStatuses(budgets.filter(b => b.month === month), transactions, monthlyIncome, month);
 
     for (const s of statuses) {
       if (s.status === "ok") continue;

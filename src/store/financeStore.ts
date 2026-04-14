@@ -101,6 +101,8 @@ export type UserCategoryTypeOverrides = Partial<Record<Category, CategoryType>>;
 export interface Budget {
   id: string;
   category: Category;
+  /** YYYY-MM – the month this budget applies to */
+  month: string;
   /** 'percentage' = % of monthly income; 'fixed' = fixed dollar limit */
   type: 'percentage' | 'fixed';
   percentage?: number;      // set when type === 'percentage'
@@ -354,10 +356,16 @@ export function selectBudgetStatuses(
   const expenses = transactions.filter(
     (t) => t.type === 'expense' && t.date.startsWith(month)
   );
+
+  // For past months: treat the whole month as elapsed
   const today = new Date();
-  const daysElapsed = today.getDate();
-  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-  const daysLeft = Math.max(daysInMonth - daysElapsed, 0);
+  const [mYear, mMonth] = month.split('-').map(Number);
+  const isPastMonth =
+    mYear < today.getFullYear() ||
+    (mYear === today.getFullYear() && mMonth < today.getMonth() + 1);
+  const daysInMonth = new Date(mYear, mMonth, 0).getDate();
+  const daysElapsed = isPastMonth ? daysInMonth : today.getDate();
+  const daysLeft = isPastMonth ? 0 : Math.max(daysInMonth - daysElapsed, 0);
 
   return budgets.map((b) => {
     const base =

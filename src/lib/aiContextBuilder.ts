@@ -64,7 +64,8 @@ export function buildFinancialContext() {
   // Budget statuses for current month (income adjusted for savings-goal contributions)
   const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
   const adjustedIncome = Math.max(income - totalGoalSavings, 0);
-  const budgetStatuses = selectBudgetStatuses(budgets, transactions, adjustedIncome, currentMonth)
+  const currentMonthBudgets = budgets.filter(b => b.month === currentMonth);
+  const budgetStatuses = selectBudgetStatuses(currentMonthBudgets, transactions, adjustedIncome, currentMonth)
   const budgetsSummary = budgetStatuses.map(bs => ({
     category: bs.category,
     limitAmount: bs.limitAmount,
@@ -224,6 +225,7 @@ BUDGET JSON FORMAT (silent, no markdown wrapper, at the very end — emit ONLY a
 }
 Supported budget categories: Rent, Food, Groceries, Travel, Subscriptions, Shopping, Utilities, Healthcare, Entertainment, Education, Other
 For percentage-of-income budgets: { "category": "Food", "type": "percentage", "percentage": 15, "alertThreshold": 80 }
+The "month" field is added automatically by the app — do NOT include it in your JSON.
 Do NOT include goal contributions as a budget line — those are handled by goals.
 
 SPECIAL ACTIONS (silent, at the very end, one per response):

@@ -55,7 +55,7 @@ export function SupabaseSync() {
       ]);
 
       if (data) {
-        if (data.transactions.length > 0 || data.goals.length > 0 || data.splitwiseKey) {
+        if (data.transactions.length > 0 || data.goals.length > 0 || data.splitwiseKey || (data.budgets?.length ?? 0) > 0) {
           // Existing user with data — hydrate and mark as onboarded
           useFinanceStore.getState().hydrate(data);
           useFinanceStore.getState().setHasOnboarded(true);

@@ -583,10 +583,20 @@ export default function ScenarioLab() {
             const merged = [...otherMonths, ...Array.from(byCategory.values())];
             setBudgets(merged);
 
-            // Persist to Supabase if configured
+            // Persist to Supabase and sync back the DB-assigned IDs into the store.
+            // saveBudget upserts on (user_email, category, month), so if a row already
+            // existed with a different id, the DB returns its canonical id. We patch the
+            // store so deletions and future upserts use the correct DB id.
             if (user?.email && isSupabaseConfigured()) {
+              const dbResults: Budget[] = [];
               for (const b of incoming) {
-                await saveBudget(user.email, b);
+                const dbBudget = await saveBudget(user.email, b);
+                if (dbBudget) dbResults.push(dbBudget);
+              }
+              if (dbResults.length > 0) {
+                const dbById = new Map(dbResults.map((b) => [`${b.category}|${b.month}`, b]));
+                const corrected = merged.map((b) => dbById.get(`${b.category}|${b.month}`) ?? b);
+                setBudgets(corrected);
               }
             }
             addedBudgets = incoming.length;

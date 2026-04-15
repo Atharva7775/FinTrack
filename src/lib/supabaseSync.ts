@@ -202,14 +202,14 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
     );
     if (settingsError) throw settingsError;
 
-    // Replace this user's budgets (delete-all + reinsert so deletions are honoured)
-    const { error: budgetDeleteError } = await supabase.from("budgets").delete().eq("user_email", userEmail);
-    if (budgetDeleteError) throw budgetDeleteError;
-    if (payload.budgets && payload.budgets.length > 0) {
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      const budgetRows = payload.budgets.map((b) => ({
-        // Only send the id if it is a real UUID; otherwise let the DB generate one
-        ...(UUID_RE.test(b.id) ? { id: b.id } : {}),
+    // Sync budgets: safe upsert by (user_email, category, month) — never delete-all first.
+    // Individual saveBudget() / deleteBudgetRow() calls are the primary persistence path;
+    // this is the background fallback that catches any gaps.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const validBudgets = (payload.budgets ?? []).filter((b) => UUID_RE.test(b.id));
+    if (validBudgets.length > 0) {
+      const budgetRows = validBudgets.map((b) => ({
+        id: b.id,
         user_email: userEmail,
         category: b.category,
         month: b.month,
@@ -219,8 +219,32 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
         rollover_balance: b.rolloverBalance,
         alert_threshold: b.alertThreshold,
       }));
-      const { error: budgetError } = await supabase.from("budgets").insert(budgetRows);
-      if (budgetError) throw budgetError;
+      const { error: budgetUpsertError } = await supabase
+        .from("budgets")
+        .upsert(budgetRows, { onConflict: "user_email,category,month" });
+      if (budgetUpsertError) {
+        console.error("FinTrack: budget upsert failed", budgetUpsertError);
+        // Non-fatal: keep going so transactions/goals are never affected by a budget error
+      } else {
+        // Clean up budgets deleted from the store: remove DB rows whose (category, month)
+        // is no longer represented in the current store state.
+        const currentKeys = new Set(validBudgets.map((b) => `${b.category}|${b.month}`));
+        const { data: dbRows } = await supabase
+          .from("budgets")
+          .select("id, category, month")
+          .eq("user_email", userEmail);
+        if (dbRows) {
+          const staleIds = dbRows
+            .filter((r) => !currentKeys.has(`${r.category}|${r.month}`))
+            .map((r) => r.id);
+          if (staleIds.length > 0) {
+            await supabase.from("budgets").delete().in("id", staleIds);
+          }
+        }
+      }
+    } else {
+      // Store has no budgets — wipe all for this user
+      await supabase.from("budgets").delete().eq("user_email", userEmail);
     }
 
     return true;

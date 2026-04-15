@@ -198,6 +198,24 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
     );
     if (settingsError) throw settingsError;
 
+    // Replace this user's budgets (delete-all + reinsert so deletions are honoured)
+    await supabase.from("budgets").delete().eq("user_email", userEmail);
+    if (payload.budgets && payload.budgets.length > 0) {
+      const budgetRows = payload.budgets.map((b) => ({
+        id: b.id,
+        user_email: userEmail,
+        category: b.category,
+        month: b.month,
+        type: b.type,
+        percentage: b.percentage ?? null,
+        fixed_amount: b.fixedAmount ?? null,
+        rollover_balance: b.rolloverBalance,
+        alert_threshold: b.alertThreshold,
+      }));
+      const { error: budgetError } = await supabase.from("budgets").insert(budgetRows);
+      if (budgetError) console.error("FinTrack: failed to persist budgets", budgetError);
+    }
+
     return true;
   } catch (e) {
     console.error("FinTrack: failed to persist to Supabase", e);

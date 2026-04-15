@@ -27,6 +27,10 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
     if (txRes.error) throw txRes.error;
     if (goalsRes.error) throw goalsRes.error;
     if (contribRes.error) throw contribRes.error;
+    if (budgetsRes.error) {
+      // If the month column doesn't exist yet, log clearly and continue with empty budgets
+      console.error("FinTrack: budget fetch failed — schema may be missing 'month' column. Run the migration in supabase/migrations/007_add_budget_month.sql", budgetsRes.error);
+    }
     const transactions: Transaction[] = (txRes.data || []).map((r) => ({
       id: r.id,
       type: r.type as Transaction["type"],
@@ -199,10 +203,13 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
     if (settingsError) throw settingsError;
 
     // Replace this user's budgets (delete-all + reinsert so deletions are honoured)
-    await supabase.from("budgets").delete().eq("user_email", userEmail);
+    const { error: budgetDeleteError } = await supabase.from("budgets").delete().eq("user_email", userEmail);
+    if (budgetDeleteError) throw budgetDeleteError;
     if (payload.budgets && payload.budgets.length > 0) {
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const budgetRows = payload.budgets.map((b) => ({
-        id: b.id,
+        // Only send the id if it is a real UUID; otherwise let the DB generate one
+        ...(UUID_RE.test(b.id) ? { id: b.id } : {}),
         user_email: userEmail,
         category: b.category,
         month: b.month,
@@ -213,7 +220,7 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
         alert_threshold: b.alertThreshold,
       }));
       const { error: budgetError } = await supabase.from("budgets").insert(budgetRows);
-      if (budgetError) console.error("FinTrack: failed to persist budgets", budgetError);
+      if (budgetError) throw budgetError;
     }
 
     return true;

@@ -198,7 +198,7 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
   budgets: [],
   setBudgets: (budgets) => set({ budgets, hasBudgetSetup: budgets.length > 0 }),
   addBudget: (b) => set((s) => {
-    const budget = { ...b, id: String(nextId++) };
+    const budget = { ...b, id: crypto.randomUUID() };
     return { budgets: [...s.budgets, budget], hasBudgetSetup: true };
   }),
   updateBudget: (id, changes) => set((s) => ({

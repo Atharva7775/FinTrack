@@ -3,6 +3,20 @@ import type { FinancialSnapshotForAI } from "@/lib/financialSnapshotForAI";
 
 export type AiProvider = "gemini";
 
+/** Thrown when the API returns a transient error that is safe to retry (429, 500, 503). */
+export class RetryableError extends Error {
+  constructor(
+    message: string,
+    /** HTTP status from the API */
+    public readonly status: number,
+    /** Seconds to wait before retrying, if the server sent a Retry-After header */
+    public readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = "RetryableError";
+  }
+}
+
 /** Minimal conversational history used by Gemini internally in ScenarioLab. */
 type ChatTurn = { role: "user" | "assistant"; content: string };
 
@@ -61,11 +75,27 @@ export async function chatWithGemini(params: {
   );
 
   if (!response.ok) {
-    const err = await response.json();
-    console.error("Gemini API Error:", err);
+    const retryableStatuses = [429, 500, 503];
+    // Parse Retry-After header if present (value is seconds)
+    const retryAfterSec = response.headers.get("Retry-After");
+    const retryAfterMs = retryAfterSec ? Number(retryAfterSec) * 1000 : undefined;
+
+    let errMessage = `AI request failed (${response.status}).`;
+    try {
+      const err = await response.json();
+      errMessage = err.error?.message || errMessage;
+      console.error("Gemini API Error:", err);
+    } catch {
+      console.error("Gemini API Error: status", response.status);
+    }
+
+    if (retryableStatuses.includes(response.status)) {
+      throw new RetryableError(errMessage, response.status, retryAfterMs);
+    }
     throw new Error(
-      err.error?.message || 
-      `AI request failed (${response.status}). Check your Gemini API key.`
+      response.status === 401 || response.status === 403
+        ? "Invalid or missing Gemini API key. Please check VITE_GEMINI_API_KEY in your .env file."
+        : errMessage,
     );
   }
   const json = await response.json();

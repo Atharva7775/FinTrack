@@ -24,7 +24,7 @@ import { useChatStore } from "@/store/chatStore";
 import { useAuth } from "@/hooks/useAuth";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { buildFinancialContext, buildSystemPrompt } from "@/lib/aiContextBuilder";
-import { chatWithGemini, getAiProvider } from "@/lib/aiChatClient";
+import { chatWithGemini, getAiProvider, RetryableError, RetryableError } from "@/lib/aiChatClient";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CursorTooltip } from "@/components/CursorTooltip";
@@ -221,6 +221,44 @@ export default function ScenarioLab() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const supabaseConfigured = isSupabaseConfigured();
 
+  // ── Retry state ──────────────────────────────────────────────────────────────
+  const [retryState, setRetryState] = useState<{
+    attempt: number;
+    maxRetries: number;
+    startedAt: number;
+    delayMs: number;
+  } | null>(null);
+  const [retryProgress, setRetryProgress] = useState(0);
+
+  // Tick the progress bar while a retry countdown is in progress
+  useEffect(() => {
+    if (!retryState) { setRetryProgress(0); return; }
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - retryState.startedAt;
+      setRetryProgress(Math.min((elapsed / retryState.delayMs) * 100, 100));
+    }, 100);
+    return () => clearInterval(interval);
+  }, [retryState]);
+
+  // ── Retry state ──────────────────────────────────────────────────────────────
+  const [retryState, setRetryState] = useState<{
+    attempt: number;
+    maxRetries: number;
+    startedAt: number;
+    delayMs: number;
+  } | null>(null);
+  const [retryProgress, setRetryProgress] = useState(0);
+
+  // Tick the progress bar while a retry countdown is in progress
+  useEffect(() => {
+    if (!retryState) { setRetryProgress(0); return; }
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - retryState.startedAt;
+      setRetryProgress(Math.min((elapsed / retryState.delayMs) * 100, 100));
+    }, 100);
+    return () => clearInterval(interval);
+  }, [retryState]);
+
   const context = buildFinancialContext();
   const systemPromptOverride = buildSystemPrompt(context, knowledgeBase);
 
@@ -370,18 +408,47 @@ export default function ScenarioLab() {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     const currentAttachment = attachment;
-    setAttachment(null);
-    setIsLoading(true);
+    se// Cap history at the last 12 messages to control token usage
+      const cappedHistory = priorMessages.slice(-12);
+      const historyText = cappedHistory.length === 0
+        ? "No prior conversation."
+        : cappedHistory.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
 
-    if (supabaseConfigured && user?.email) {
-      await saveMessage(activeSessionId, user.email, "user", userMessage.content);
-    }
-    const isFirstUserMessage = priorMessages.filter((m) => m.role === "user").length === 0;
-    if (isFirstUserMessage) {
-      const sessionName = trimmed.length > 40 ? trimmed.slice(0, 40) + "…" : trimmed;
-      setSessions((prev) => prev.map((s) => (s.id === activeSessionId ? { ...s, name: sessionName } : s)));
-      if (supabaseConfigured) void renameChatSession(activeSessionId, sessionName);
-    }
+      // Retry loop — up to 2 retries on transient errors (429, 500, 503)
+      const DEFAULT_RETRY_DELAY_MS = 30_000;
+      const configuredDelay = Number(import.meta.env.VITE_AI_RETRY_DELAY_MS) || DEFAULT_RETRY_DELAY_MS;
+      const MAX_RETRIES = 2;
+      let content = "";
+      let lastError: Error | null = null;
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          content = await chatWithGemini({
+            snapshot: context,
+            historyText,
+            latestUserQuestion: trimmed,
+            apiKey: geminiKey,
+            attachment: currentAttachment || undefined,
+            systemPromptOverride,
+          });
+          lastError = null;
+          break; // success — exit retry loop
+        } catch (err) {
+          if (err instanceof RetryableError && attempt < MAX_RETRIES) {
+            const delayMs = err.retryAfterMs ?? configuredDelay;
+            setRetryState({ attempt: attempt + 1, maxRetries: MAX_RETRIES, startedAt: Date.now(), delayMs });
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            setRetryState(null);
+            continue; // retry
+          }
+          // Non-retryable or exhausted retries — bubble up
+          lastError = err instanceof Error ? err : new Error(String(err));
+          break;
+        }
+      }
+
+      if (lastError) throw lastError;
+
     try {
       const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
       if (!geminiKey) {
@@ -389,18 +456,47 @@ export default function ScenarioLab() {
         setIsLoading(false);
         return;
       }
-      const historyText = priorMessages.length === 0
+      // Cap history at the last 12 messages to control token usage
+      const cappedHistory = priorMessages.slice(-12);
+      const historyText = cappedHistory.length === 0
         ? "No prior conversation."
-        : priorMessages.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
-      
-      const content = await chatWithGemini({ 
-        snapshot: context, 
-        historyText, 
-        latestUserQuestion: trimmed, 
-        apiKey: geminiKey,
-        attachment: currentAttachment || undefined,
-        systemPromptOverride
-      });
+        : cappedHistory.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
+
+      // Retry loop — up to 2 retries on transient errors (429, 500, 503)
+      const DEFAULT_RETRY_DELAY_MS = 30_000;
+      const configuredDelay = Number(import.meta.env.VITE_AI_RETRY_DELAY_MS) || DEFAULT_RETRY_DELAY_MS;
+      const MAX_RETRIES = 2;
+      let content = "";
+      let lastError: Error | null = null;
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          content = await chatWithGemini({
+            snapshot: context,
+            historyText,
+            latestUserQuestion: trimmed,
+            apiKey: geminiKey,
+            attachment: currentAttachment || undefined,
+            systemPromptOverride,
+          });
+          lastError = null;
+          break; // success — exit retry loop
+        } catch (err) {
+          if (err instanceof RetryableError && attempt < MAX_RETRIES) {
+            const delayMs = err.retryAfterMs ?? configuredDelay;
+            setRetryState({ attempt: attempt + 1, maxRetries: MAX_RETRIES, startedAt: Date.now(), delayMs });
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            setRetryState(null);
+            continue; // retry
+          }
+          // Non-retryable or exhausted retries — bubble up
+          lastError = err instanceof Error ? err : new Error(String(err));
+          break;
+        }
+      }
+
+      if (lastError) throw lastError;
+
 
       let addedGoals = 0;
       let updatedGoals = 0;
@@ -581,10 +677,18 @@ export default function ScenarioLab() {
             const byCategory = new Map(currentMonthExisting.map(b => [b.category, b]));
             for (const nb of incoming) byCategory.set(nb.category, nb);
             const merged = [...otherMonths, ...Array.from(byCategory.values())];
-            setBudgets(merged);
-
-            // Persist to Supabase and sync back the DB-assigned IDs into the store.
-            // saveBudget upserts on (user_email, category, month), so if a row already
+      const isRateLimit = e instanceof RetryableError && e.status === 429;
+      // Inject a friendly assistant message instead of showing a banner error
+      const failureMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: isRateLimit
+          ? "The AI model is currently overloaded. I've retried a couple of times but couldn't get through. Please try your message again in a moment — your question is still in the chat above."
+          : (e instanceof Error ? e.message : "Something went wrong while talking to the AI. Please try again in a moment."),
+      };
+      setMessages((prev) => [...prev, failureMessage]);
+    } finally {
+      setRetryState(null);saveBudget upserts on (user_email, category, month), so if a row already
             // existed with a different id, the DB returns its canonical id. We patch the
             // store so deletions and future upserts use the correct DB id.
             if (user?.email && isSupabaseConfigured()) {
@@ -629,10 +733,18 @@ export default function ScenarioLab() {
       }
     } catch (e) {
       console.error("FinTrack: AI chat failed", e);
-      setError(
-        e instanceof Error ? e.message : "Something went wrong while talking to the AI. Please try again in a moment."
-      );
+      const isRateLimit = e instanceof RetryableError && e.status === 429;
+      // Inject a friendly assistant message instead of showing a banner error
+      const failureMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: isRateLimit
+          ? "The AI model is currently overloaded. I've retried a couple of times but couldn't get through. Please try your message again in a moment — your question is still in the chat above."
+          : (e instanceof Error ? e.message : "Something went wrong while talking to the AI. Please try again in a moment."),
+      };
+      setMessages((prev) => [...prev, failureMessage]);
     } finally {
+      setRetryState(null);
       setIsLoading(false);
     }
   };
@@ -843,7 +955,21 @@ export default function ScenarioLab() {
                                   <code>{children}</code>
                                 </pre>
                               ) : (
-                                <code className="bg-background/60 px-1 rounded text-xs font-mono">{children}</code>
+           /* Retry countdown progress bar */}
+          {retryState && (
+            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40 px-4 py-3 space-y-2">
+              <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                Due to heavy load on the model, retrying automatically (attempt {retryState.attempt} of {retryState.maxRetries})… Thank you for your patience.
+              </p>
+              <div className="h-1.5 w-full rounded-full bg-amber-200 dark:bg-amber-800 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-amber-500 dark:bg-amber-400 transition-none"
+                  style={{ width: `${retryProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {                     <code className="bg-background/60 px-1 rounded text-xs font-mono">{children}</code>
                               );
                             },
                             p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
@@ -899,6 +1025,20 @@ export default function ScenarioLab() {
             </div>
           </div>
 
+          {/* Retry countdown progress bar */}
+          {retryState && (
+            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40 px-4 py-3 space-y-2">
+              <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                Due to heavy load on the model, retrying automatically (attempt {retryState.attempt} of {retryState.maxRetries})… Thank you for your patience.
+              </p>
+              <div className="h-1.5 w-full rounded-full bg-amber-200 dark:bg-amber-800 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-amber-500 dark:bg-amber-400 transition-none"
+                  style={{ width: `${retryProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
           {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
 
           <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-border">

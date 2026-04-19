@@ -52,6 +52,7 @@ Then open **http://localhost:8080** in your browser.
 | `VITE_SUPABASE_ANON_KEY` | Optional | Your Supabase anon/public API key |
 | `VITE_GEMINI_API_KEY` | **Required** | API key for Google Gemini — [get one here](https://aistudio.google.com/app/apikey) |
 | `VITE_GEMINI_MODEL` | Optional | Model name (default: `gemini-2.5-flash`) |
+| `VITE_AI_RETRY_DELAY_MS` | Optional | Delay in ms before retrying a failed AI request (default: `30000` = 30 s). Set to e.g. `900000` for 15 min. |
 | `VITE_GOOGLE_CLIENT_ID` | Optional | Web OAuth client ID for Google Sign-In |
 | `VITE_TELEGRAM_BOT_USERNAME` | Optional | Telegram bot username for QR linking UI (e.g. `Fintrack100_bot`) |
 
@@ -81,6 +82,8 @@ By default, FinTrack keeps everything in memory. To persist data, connect to a *
 | `supabase/migrations/002_user_email_isolation.sql` | Adds `user_email` column to all tables for per-user isolation |
 | `supabase/migrations/003_app_settings_user_isolation.sql` | Composite PK `(key, user_email)` on `app_settings` |
 | `supabase/migrations/004_telegram_bot.sql` | Adds `source` to transactions, `channel`/`user_email` to chat messages, Realtime publications |
+| `supabase/migrations/006_budget_system.sql` | Budget table with category, month, type, rollover balance, and alert threshold. **Note: RLS must be disabled on this table** — run `ALTER TABLE public.budgets DISABLE ROW LEVEL SECURITY`. |
+| `supabase/migrations/007_add_budget_month.sql` | Idempotent — adds `month` column, unique index on `(user_email, category, month)` |
 
 ### 3. Configure the app
 
@@ -107,13 +110,14 @@ Scenario Lab sends a structured snapshot of your finances to **Google Gemini 2.5
 
 | Feature | Description |
 |---------|-------------|
-| **Financial Context** | AI sees your real transactions, goals, savings balance, and spending trends on every message. |
+| **Financial Context** | AI sees your real transactions, goals, savings balance, and spending trends on every message. Conversation history is capped at the last 12 messages to keep token usage under control. |
 | **AI Memory (Knowledge Base)** | The AI passively learns about you across conversations — city, risk tolerance, goals, spending personality. Stored per-user in Supabase; manageable in Settings → AI Memory. |
 | **Financial Operations Expert** | Built-in skill covering profit/loss analysis, tax planning (quarterly estimates, S-Corp thresholds), cash flow forecasting, and bookkeeping frameworks. |
 | **Google Search Grounding** | Gemini automatically searches the web for live data (interest rates, tax rules, market info) when needed. |
 | **Receipt & Document OCR** | Attach a photo of a bill, bank statement, or PDF — the AI reads it against your financial data. Click the 📎 paperclip button in the chat input. |
 | **Action Blocks** | Ask the AI to create a goal, log a transaction, or update data — it emits structured JSON the app applies automatically. |
 | **Decision Simulation** | Ask "what if" questions: rent increases, investment plans, goal changes — the AI projects outcomes using your real numbers. |
+| **Rate-limit retry** | On HTTP 429 / 500 / 503 responses the app automatically retries up to 2 times. An amber progress bar counts down the wait and shows which attempt is in progress. The delay is configurable via `VITE_AI_RETRY_DELAY_MS` (default 30 s). |
 
 ---
 

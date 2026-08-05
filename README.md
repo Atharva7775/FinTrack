@@ -13,7 +13,7 @@ A personal finance tracker with income & expense management, savings goals, AI-p
 | **Goals** | Create savings goals with a target amount, deadline, and monthly contribution. Log contributions, track progress, and use the **Goal Optimizer** to get AI-powered spending-cut recommendations. |
 | **Insights** | Detailed "Essential vs. Optional" expense autopsy. Highlights categories that grew >10% month-over-month. |
 | **Scenario Lab** | AI Financial Co-Worker — powered by **Google Gemini 2.5 Flash**. Answers questions using your real transactions, goals, and financial context. Supports file/image/PDF attachments, receipt OCR, Google Search grounding, and persistent AI Memory. |
-| **Settings** | Splitwise sync, seed data management, view mode toggle, **AI Memory** viewer, and **Telegram bot linking** (QR code). |
+| **Settings** | Seed data management, **AI Memory** viewer, and **Telegram bot linking** (QR code). |
 | **Telegram Bot** | Full-featured bot (`@Fintrack100_bot`) with OCR receipt scanning, transaction logging, past-transaction editing, goal tracking, financial guidance, and multi-month trend analysis. Runs 24/7 independently of the web app. |
 
 ---
@@ -78,7 +78,6 @@ By default, FinTrack keeps everything in memory. To persist data, connect to a *
 
 | Migration | Purpose |
 |-----------|---------|
-| `supabase/migrations/001_splitwise_fields.sql` | Adds Splitwise balance fields |
 | `supabase/migrations/002_user_email_isolation.sql` | Adds `user_email` column to all tables for per-user isolation |
 | `supabase/migrations/003_app_settings_user_isolation.sql` | Composite PK `(key, user_email)` on `app_settings` |
 | `supabase/migrations/004_telegram_bot.sql` | Adds `source` to transactions, `channel`/`user_email` to chat messages, Realtime publications |
@@ -213,7 +212,6 @@ src/
 │   ├── userKnowledgeBase.ts      # AI Memory — types, derive, merge, load, save
 │   ├── financialSnapshotForAI.ts # Serializes store state for AI context
 │   ├── scenarioEngine.ts         # Scenario simulation helpers
-│   ├── splitwise.ts              # Splitwise API integration
 │   ├── pdfGenerator.ts           # PDF report export
 │   └── utils.ts                  # Class utilities
 ├── pages/
@@ -222,7 +220,7 @@ src/
 │   ├── Goals.tsx                 # Goals list, contributions, optimizer
 │   ├── Insights.tsx              # Expense autopsy
 │   ├── ScenarioLab.tsx           # Gemini AI chat — OCR attachments, action blocks, KB
-│   ├── Settings.tsx              # Splitwise sync, seed data, AI Memory, Telegram QR linking
+│   ├── Settings.tsx              # Seed data, AI Memory, Telegram QR linking
 │   └── NotFound.tsx
 └── store/
     ├── financeStore.ts           # Zustand global state (transactions, goals, savings)

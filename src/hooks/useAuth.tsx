@@ -24,6 +24,7 @@ export interface GoogleUser {
 
 interface AuthCtx {
   user: GoogleUser | null;
+  idToken: string | null;
   signIn: () => void;
   signOut: () => void;
   /** Sign in manually with a name and email (fallback for non-Google browsers). */
@@ -39,6 +40,7 @@ interface AuthCtx {
 
 const AuthContext = createContext<AuthCtx>({
   user: null,
+  idToken: null,
   signIn: () => {},
   signOut: () => {},
   signInManually: () => {},
@@ -49,6 +51,7 @@ const AuthContext = createContext<AuthCtx>({
 });
 
 const STORAGE_KEY = "fintrack_google_user";
+const TOKEN_STORAGE_KEY = "fintrack_google_id_token";
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -106,6 +109,7 @@ function decodeJwt(token: string): GoogleUser | null {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<GoogleUser | null>(null);
+  const [idToken, setIdToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [gsiReady, setGsiReady] = useState(false);
   const [gsiInitialized, setGsiInitialized] = useState(false);
@@ -147,6 +151,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Restore session from storage
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
+    const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
     if (stored) {
       try {
         setUser(JSON.parse(stored));
@@ -154,6 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem(STORAGE_KEY);
       }
     }
+    if (storedToken) setIdToken(storedToken);
     setIsLoading(false);
   }, []);
 
@@ -189,7 +195,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const decoded = decodeJwt(response.credential);
         if (decoded) {
           setUser(decoded);
+          setIdToken(response.credential);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(decoded));
+          localStorage.setItem(TOKEN_STORAGE_KEY, response.credential);
         } else {
           toast.error("Could not read Google sign-in response");
         }
@@ -213,7 +221,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!trimmedName || !trimmedEmail) return;
     const manualUser: GoogleUser = { name: trimmedName, email: trimmedEmail, picture: "" };
     setUser(manualUser);
+    setIdToken(null);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(manualUser));
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
     toast.success(`Signed in as ${trimmedName}`);
   }, []);
 
@@ -230,7 +240,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           picture: "",
         };
         setUser(demoUser);
+        setIdToken(null);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(demoUser));
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
       }
       return;
     }
@@ -260,18 +272,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.google.accounts.id.revoke(user.email, () => {});
     }
     setUser(null);
+    setIdToken(null);
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
   }, [user]);
 
   return (
     <AuthContext.Provider
-      value={{ user, signIn, signOut, signInManually, isLoading, gsiReady, gsiInitialized, gsiBlocked }}
+      value={{ user, idToken, signIn, signOut, signInManually, isLoading, gsiReady, gsiInitialized, gsiBlocked }}
     >
       {children}
     </AuthContext.Provider>
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   return useContext(AuthContext);
 }

@@ -46,8 +46,6 @@ export function useRealtimeSync(userEmail: string | null | undefined) {
             category: String(r.category) as Transaction["category"],
             date: String(r.date),
             note: String(r.note ?? ""),
-            isSplitwise: Boolean(r.is_splitwise ?? false),
-            splitwiseId: r.splitwise_id != null ? Number(r.splitwise_id) : undefined,
             originalCurrency: r.original_currency != null ? String(r.original_currency) : undefined,
             originalAmount: r.original_amount != null ? Number(r.original_amount) : undefined,
             usdAmount: r.usd_amount != null ? Number(r.usd_amount) : undefined,

@@ -43,12 +43,7 @@ const INSIGHTS_FIELD_GUIDE = [
 ## Logic (inside Insights component)
 
 ```tsx
-const { transactions: allTx, goals, viewMode, budgetSplit } = useFinanceStore();
-
-const transactions = useMemo(
-  () => allTx.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise)),
-  [allTx, viewMode]
-);
+const { transactions, goals, budgetSplit } = useFinanceStore();
 
 const allMonths = useMemo(() => {
   const months = new Set<string>();

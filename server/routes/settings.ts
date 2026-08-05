@@ -5,10 +5,6 @@ export const settingsRouter = Router();
 
 const VALID_KEYS = [
   "savings_balance",
-  "splitwise_key",
-  "splitwise_last_sync",
-  "splitwise_balances",
-  "view_mode",
   "budget_split",
 ] as const;
 
@@ -30,7 +26,6 @@ const VALID_KEYS = [
  *               additionalProperties: true
  *               example:
  *                 savings_balance: 5000
- *                 view_mode: "personal"
  *                 budget_split: [50, 30, 20]
  *       400:
  *         description: Missing user_email
@@ -79,7 +74,6 @@ settingsRouter.get("/", async (req: Request, res: Response) => {
  *                 additionalProperties: true
  *                 example:
  *                   savings_balance: 7500
- *                   view_mode: "personal"
  *                   budget_split: [50, 30, 20]
  *     responses:
  *       200:

@@ -10,14 +10,6 @@ export default defineConfig({
     hmr: {
       overlay: false,
     },
-    proxy: {
-      '/api/splitwise': {
-        target: 'https://secure.splitwise.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/splitwise/, '/api/v3.0'),
-        secure: false,
-      },
-    }
   },
   plugins: [react()],
   resolve: {

@@ -50,6 +50,48 @@ import { saveBudget, deleteBudgetRow } from "@/lib/supabaseSync";
 import { getCurrentMonthKey } from "@/lib/utils";
 
 const SESSION_STORAGE_KEY = "fintrack_active_chat_session_id";
+const MCP_CHAT_BASE_URL = (import.meta.env.VITE_CHAT_API_URL || "http://localhost:3001").replace(/\/$/, "");
+
+interface McpChatResponse {
+  route: "mcp" | "direct-llm";
+  answer?: string;
+  tool?: string | null;
+  data?: unknown;
+  meta?: Record<string, unknown>;
+}
+
+async function requestMcpChat(params: {
+  idToken: string;
+  inputText: string;
+  month?: string;
+  sessionId?: string;
+}): Promise<McpChatResponse> {
+  const response = await fetch(`${MCP_CHAT_BASE_URL}/api/chat/query`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${params.idToken}`,
+    },
+    body: JSON.stringify({
+      inputText: params.inputText,
+      month: params.month,
+      sessionId: params.sessionId,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `MCP chat failed (${response.status})`;
+    try {
+      const json = await response.json();
+      if (json?.error) message = String(json.error);
+    } catch {
+      // Ignore parse failures and keep generic message.
+    }
+    throw new Error(message);
+  }
+
+  return (await response.json()) as McpChatResponse;
+}
 
 function extractCsvFromMessage(content: string): string | null {
   const match = content.match(/```csv\r?\n([\s\S]*?)```/);
@@ -73,6 +115,10 @@ interface ChatMessage {
   role: ChatRole;
   content: string;
   createdAt?: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
 const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.05 } } };
@@ -202,8 +248,8 @@ function stripJsonBlocks(text: string): string {
 }
 
 export default function ScenarioLab() {
-  const { transactions, goals, savingsBalance, viewMode, splitwiseBalances, budgets: storeBudgets, setBudgets, addGoalContribution, setSavingsBalance, deleteBudget } = useFinanceStore();
-  const { user, isLoading: authLoading } = useAuth();
+  const { transactions, goals, savingsBalance, budgets: storeBudgets, setBudgets, addGoalContribution, setSavingsBalance, deleteBudget } = useFinanceStore();
+  const { user, idToken, isLoading: authLoading } = useAuth();
 
   const [sessions, setSessions] = useState<StoredChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -317,7 +363,7 @@ export default function ScenarioLab() {
     return () => {
       cancelled = true;
     };
-  }, [user?.email, authLoading]);
+  }, [user?.email, user?.name, authLoading, startNewSession, supabaseConfigured]);
 
 
   useEffect(() => {
@@ -401,51 +447,72 @@ export default function ScenarioLab() {
       if (supabaseConfigured) void renameChatSession(activeSessionId, sessionName);
     }
     try {
-      const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-      if (!geminiKey) {
-        setError("Set VITE_GEMINI_API_KEY in your .env file to enable FinTrack AI.");
-        setIsLoading(false);
-        return;
-      }
-      // Cap history at the last 12 messages to control token usage
-      const cappedHistory = priorMessages.slice(-12);
-      const historyText = cappedHistory.length === 0
-        ? "No prior conversation."
-        : cappedHistory.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
-
-      // Retry loop — up to 2 retries on transient errors (429, 500, 503)
-      const DEFAULT_RETRY_DELAY_MS = 30_000;
-      const configuredDelay = Number(import.meta.env.VITE_AI_RETRY_DELAY_MS) || DEFAULT_RETRY_DELAY_MS;
-      const MAX_RETRIES = 2;
       let content = "";
-      let lastError: Error | null = null;
+      let mcpHandled = false;
 
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (idToken && !currentAttachment) {
         try {
-          content = await chatWithGemini({
-            snapshot: context,
-            historyText,
-            latestUserQuestion: trimmed,
-            apiKey: geminiKey,
-            attachment: currentAttachment || undefined,
-            systemPromptOverride,
+          const mcpResponse = await requestMcpChat({
+            idToken,
+            inputText: trimmed,
+            sessionId: activeSessionId,
+            month: getCurrentMonthKey(),
           });
-          lastError = null;
-          break;
-        } catch (err) {
-          if (err instanceof RetryableError && attempt < MAX_RETRIES) {
-            const delayMs = err.retryAfterMs ?? configuredDelay;
-            setRetryState({ attempt: attempt + 1, maxRetries: MAX_RETRIES, startedAt: Date.now(), delayMs });
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            setRetryState(null);
-            continue;
+          if (mcpResponse.route === "mcp" && mcpResponse.answer) {
+            content = mcpResponse.answer;
+            mcpHandled = true;
           }
-          lastError = err instanceof Error ? err : new Error(String(err));
-          break;
+        } catch (mcpError) {
+          console.warn("FinTrack: MCP chat failed, falling back to direct Gemini", mcpError);
         }
       }
 
-      if (lastError) throw lastError;
+      if (!mcpHandled) {
+        const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+        if (!geminiKey) {
+          setError("Set VITE_GEMINI_API_KEY in your .env file to enable FinTrack AI.");
+          setIsLoading(false);
+          return;
+        }
+        // Cap history at the last 12 messages to control token usage
+        const cappedHistory = priorMessages.slice(-12);
+        const historyText = cappedHistory.length === 0
+          ? "No prior conversation."
+          : cappedHistory.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
+
+        // Retry loop — up to 2 retries on transient errors (429, 500, 503)
+        const DEFAULT_RETRY_DELAY_MS = 30_000;
+        const configuredDelay = Number(import.meta.env.VITE_AI_RETRY_DELAY_MS) || DEFAULT_RETRY_DELAY_MS;
+        const MAX_RETRIES = 2;
+        let lastError: Error | null = null;
+
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            content = await chatWithGemini({
+              snapshot: context,
+              historyText,
+              latestUserQuestion: trimmed,
+              apiKey: geminiKey,
+              attachment: currentAttachment || undefined,
+              systemPromptOverride,
+            });
+            lastError = null;
+            break;
+          } catch (err) {
+            if (err instanceof RetryableError && attempt < MAX_RETRIES) {
+              const delayMs = err.retryAfterMs ?? configuredDelay;
+              setRetryState({ attempt: attempt + 1, maxRetries: MAX_RETRIES, startedAt: Date.now(), delayMs });
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              setRetryState(null);
+              continue;
+            }
+            lastError = err instanceof Error ? err : new Error(String(err));
+            break;
+          }
+        }
+
+        if (lastError) throw lastError;
+      }
 
       let addedGoals = 0;
       let updatedGoals = 0;
@@ -516,18 +583,21 @@ export default function ScenarioLab() {
 
           // Handle Transactions
           if (parsed && Array.isArray(parsed.transactions)) {
-            parsed.transactions.forEach((tx: any) => {
-              if (tx.action === "add" && tx.amount && tx.type && tx.category) {
+            parsed.transactions.forEach((tx) => {
+              const txObj = asRecord(tx);
+              if (!txObj) return;
+
+              if (txObj.action === "add" && txObj.amount && txObj.type && txObj.category) {
                 useFinanceStore.getState().addTransaction({
-                  type: tx.type,
-                  amount: Number(tx.amount),
-                  category: tx.category,
-                  date: typeof tx.date === "string" ? tx.date : new Date().toISOString().split("T")[0],
-                  note: tx.note || "Added via FinTrack AI",
+                  type: String(txObj.type) as "income" | "expense",
+                  amount: Number(txObj.amount),
+                  category: String(txObj.category),
+                  date: typeof txObj.date === "string" ? txObj.date : new Date().toISOString().split("T")[0],
+                  note: typeof txObj.note === "string" ? txObj.note : "Added via FinTrack AI",
                 });
                 addedTx++;
-              } else if (tx.action === "delete" && tx.id) {
-                useFinanceStore.getState().deleteTransaction(String(tx.id));
+              } else if (txObj.action === "delete" && txObj.id) {
+                useFinanceStore.getState().deleteTransaction(String(txObj.id));
                 deletedTx++;
               }
             });
@@ -548,18 +618,22 @@ export default function ScenarioLab() {
           }
 
           if (parsed && parsed.action === "createGoal" && parsed.goal) {
-            const g = parsed.goal as any;
+            const g = asRecord(parsed.goal);
+            if (!g) {
+              // Skip malformed goal payloads
+            } else {
             useFinanceStore.getState().addGoal({
-              title: g.title,
+              title: typeof g.title === "string" ? g.title : "Untitled Goal",
               targetAmount: Number(g.targetAmount) || 0,
               currentAmount: Number(g.currentAmount) || 0,
-              deadline: g.deadline || "",
+              deadline: typeof g.deadline === "string" ? g.deadline : "",
               monthlyContribution: Number(g.monthlyContribution) || 0,
-              type: g.type || 'savings',
+              type: typeof g.type === "string" ? g.type : 'savings',
               isShared: !!g.isShared,
-              members: g.members || []
+              members: Array.isArray(g.members) ? g.members : []
             });
             addedGoals++;
+            }
           }
 
           // Delete a goal by title (safe top-level action — avoids accidental fires from goals array)
@@ -594,7 +668,10 @@ export default function ScenarioLab() {
           // Handle Budgets
           if (parsed && Array.isArray(parsed.budgets) && parsed.budgets.length > 0) {
             // Handle budget deletions first
-            const budgetsToDelete = parsed.budgets.filter((b: any) => b.action === "delete" && typeof b.category === "string");
+            const budgetsToDelete = parsed.budgets
+              .map((b) => asRecord(b))
+              .filter((b): b is Record<string, unknown> => !!b)
+              .filter((b) => b.action === "delete" && typeof b.category === "string");
             for (const bd of budgetsToDelete) {
               const existing = storeBudgets.find((b) => b.category === bd.category);
               if (existing) {
@@ -608,8 +685,10 @@ export default function ScenarioLab() {
 
             const incomingMonth = getCurrentMonthKey();
             const incoming: Budget[] = parsed.budgets
-              .filter((b: any) => b.action !== "delete" && typeof b.category === "string")
-              .map((b: any) => ({
+              .map((b) => asRecord(b))
+              .filter((b): b is Record<string, unknown> => !!b)
+              .filter((b) => b.action !== "delete" && typeof b.category === "string")
+              .map((b) => ({
                 id: crypto.randomUUID(),
                 category: b.category as Budget["category"],
                 month: incomingMonth,

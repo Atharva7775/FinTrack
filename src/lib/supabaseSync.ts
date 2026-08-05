@@ -3,10 +3,6 @@ import type { Transaction, Goal, GoalContribution, HydratePayload, Budget } from
 
 const SETTINGS_KEYS = {
   savings: 'savings_balance',
-  swKey: 'splitwise_key',
-  swSync: 'splitwise_last_sync',
-  viewMode: 'view_mode',
-  swBal: 'splitwise_balances',
   budgetSplit: 'budget_split',
 } as const;
 
@@ -17,7 +13,7 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
 
   try {
     const [txRes, goalsRes, contribRes, settingsRes, budgetsRes] = await Promise.all([
-      supabase.from("transactions").select("id, type, amount, category, date, note, is_splitwise, splitwise_id, original_currency, original_amount, usd_amount, is_pending").eq("user_email", userEmail).order("date", { ascending: false }),
+      supabase.from("transactions").select("id, type, amount, category, date, note, original_currency, original_amount, usd_amount, is_pending").eq("user_email", userEmail).order("date", { ascending: false }),
       supabase.from("goals").select("id, title, target_amount, current_amount, deadline, monthly_contribution").eq("user_email", userEmail).order("created_at", { ascending: true }),
       supabase.from("goal_contributions").select("goal_id, amount, date").order("date", { ascending: false }),
       supabase.from("app_settings").select("key, value").in("key", Object.values(SETTINGS_KEYS)).eq("user_email", userEmail),
@@ -38,8 +34,6 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
       category: r.category as Transaction["category"],
       date: r.date,
       note: r.note ?? "",
-      isSplitwise: r.is_splitwise ?? false,
-      splitwiseId: r.splitwise_id ?? undefined,
       originalCurrency: r.original_currency ?? undefined,
       originalAmount: r.original_amount != null ? Number(r.original_amount) : undefined,
       usdAmount: r.usd_amount != null ? Number(r.usd_amount) : undefined,
@@ -64,17 +58,9 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
     }));
 
     let savingsBalance = 0;
-    let splitwiseKey: string | null = null;
-    let splitwiseLastSync: string | null = null;
-    let splitwiseBalances: { owe: number; owed: number } | null = null;
-    let viewMode: "personal" | "splitwise" = "personal";
 
     (settingsRes.data || []).forEach(row => {
       if (row.key === SETTINGS_KEYS.savings && row.value != null) savingsBalance = Number(row.value);
-      if (row.key === SETTINGS_KEYS.swKey && row.value != null) splitwiseKey = String(row.value);
-      if (row.key === SETTINGS_KEYS.swSync && row.value != null) splitwiseLastSync = String(row.value);
-      if (row.key === SETTINGS_KEYS.swBal && row.value != null) splitwiseBalances = row.value as { owe: number; owed: number };
-      if (row.key === SETTINGS_KEYS.viewMode && row.value != null) viewMode = String(row.value) as "personal" | "splitwise";
     });
 
     let budgetSplit: [number, number, number] = [50, 30, 20];
@@ -95,7 +81,7 @@ export async function fetchFromSupabase(userEmail: string): Promise<HydratePaylo
       alertThreshold: Number(r.alert_threshold ?? 80),
     }));
 
-    return { transactions, goals, savingsBalance, splitwiseKey, splitwiseLastSync, splitwiseBalances, viewMode, budgetSplit, budgets };
+    return { transactions, goals, savingsBalance, budgetSplit, budgets };
   } catch (e) {
     console.error("FinTrack: failed to fetch from Supabase", e);
     return null;
@@ -127,8 +113,6 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
         category: t.category,
         date: t.date,
         note: t.note,
-        is_splitwise: t.isSplitwise ?? false,
-        splitwise_id: t.splitwiseId ?? null,
         original_currency: t.originalCurrency ?? null,
         original_amount: t.originalAmount ?? null,
         usd_amount: t.usdAmount ?? null,
@@ -182,17 +166,7 @@ export async function persistToSupabase(userEmail: string, payload: HydratePaylo
     const now = new Date().toISOString();
     const settingsRows: { key: string; user_email: string; value: unknown; updated_at: string }[] = [
       { key: SETTINGS_KEYS.savings, user_email: userEmail, value: payload.savingsBalance, updated_at: now },
-      { key: SETTINGS_KEYS.viewMode, user_email: userEmail, value: payload.viewMode, updated_at: now },
     ];
-    if (payload.splitwiseKey !== undefined && payload.splitwiseKey !== null) {
-      settingsRows.push({ key: SETTINGS_KEYS.swKey, user_email: userEmail, value: payload.splitwiseKey, updated_at: now });
-    }
-    if (payload.splitwiseLastSync !== undefined && payload.splitwiseLastSync !== null) {
-      settingsRows.push({ key: SETTINGS_KEYS.swSync, user_email: userEmail, value: payload.splitwiseLastSync, updated_at: now });
-    }
-    if (payload.splitwiseBalances !== undefined && payload.splitwiseBalances !== null) {
-      settingsRows.push({ key: SETTINGS_KEYS.swBal, user_email: userEmail, value: payload.splitwiseBalances, updated_at: now });
-    }
     if (payload.budgetSplit !== undefined) {
       settingsRows.push({ key: SETTINGS_KEYS.budgetSplit, user_email: userEmail, value: payload.budgetSplit, updated_at: now });
     }

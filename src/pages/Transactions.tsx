@@ -17,11 +17,7 @@ const item = {
 };
 
 export default function Transactions() {
-  const { transactions: allTx, addTransaction, deleteTransaction, updateTransaction, viewMode } = useFinanceStore();
-  const transactions = useMemo(
-    () => allTx.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise)),
-    [allTx, viewMode]
-  );
+  const { transactions, addTransaction, deleteTransaction, updateTransaction } = useFinanceStore();
   const { user, signIn, isLoading: authLoading } = useAuth();
 
   const [open, setOpen] = useState(false);
@@ -220,20 +216,18 @@ export default function Transactions() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
-                <SelectItem value="income">{viewMode === "splitwise" ? "You are Owed" : "Income"}</SelectItem>
-                <SelectItem value="expense">{viewMode === "splitwise" ? "You Owe" : "Expense"}</SelectItem>
+                <SelectItem value="income">Income</SelectItem>
+                <SelectItem value="expense">Expense</SelectItem>
               </SelectContent>
             </Select>
           </CursorTooltip>
 
           {/* Add transaction */}
-          {viewMode !== "splitwise" && (
-            <CursorTooltip content="Open the form to add a new income or expense transaction.">
-              <Button onClick={() => handleOpen()} className="gap-2">
-                <Plus className="h-4 w-4" /> Add
-              </Button>
-            </CursorTooltip>
-          )}
+          <CursorTooltip content="Open the form to add a new income or expense transaction.">
+            <Button onClick={() => handleOpen()} className="gap-2">
+              <Plus className="h-4 w-4" /> Add
+            </Button>
+          </CursorTooltip>
         </div>
       </div>
 
@@ -270,11 +264,6 @@ export default function Transactions() {
                   <div className="min-w-0">
                     <p className="font-medium text-foreground truncate flex items-center gap-2">
                       {tx.category}
-                      {tx.isSplitwise && (
-                        <span className="text-[10px] font-bold bg-[#1cc29f]/20 text-[#1cc29f] px-1.5 py-0.5 rounded uppercase tracking-wide">
-                          Splitwise
-                        </span>
-                      )}
                       {tx.isPending && (
                         <span className="text-[10px] font-bold bg-amber-500/20 text-amber-500 px-1.5 py-0.5 rounded uppercase tracking-wide">
                           Pending
@@ -298,25 +287,18 @@ export default function Transactions() {
                     )}
                   </div>
                   
-                  {!tx.isSplitwise && (
-                    <>
-                      <CursorTooltip content="Edit this transaction (amount, category, date, or note).">
-                        <button onClick={() => handleOpen(tx)} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
-                          <Edit2 className="h-4 w-4 text-muted-foreground" />
-                        </button>
-                      </CursorTooltip>
-                      <CursorTooltip content="Delete this transaction permanently.">
-                        <button onClick={() => deleteTransaction(tx.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </button>
-                      </CursorTooltip>
-                    </>
-                  )}
-                  {tx.isSplitwise && (
-                    <CursorTooltip content="Managed by Splitwise. Edit or delete in the Splitwise app.">
-                      <div className="w-[68px]" /> {/* Spacer to align with manual transactions */}
+                  <>
+                    <CursorTooltip content="Edit this transaction (amount, category, date, or note).">
+                      <button onClick={() => handleOpen(tx)} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+                        <Edit2 className="h-4 w-4 text-muted-foreground" />
+                      </button>
                     </CursorTooltip>
-                  )}
+                    <CursorTooltip content="Delete this transaction permanently.">
+                      <button onClick={() => deleteTransaction(tx.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </button>
+                    </CursorTooltip>
+                  </>
                 </div>
               </motion.div>
             ))

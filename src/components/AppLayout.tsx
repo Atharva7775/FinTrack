@@ -102,7 +102,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () => void }) {
-  const { viewMode, budgets, transactions, goals } = useFinanceStore();
+  const { budgets, transactions, goals } = useFinanceStore();
   const currentMonth = getCurrentMonthKey();
   const rawMonthlyIncome = transactions
     .filter(t => t.type === 'income' && t.date.startsWith(currentMonth))
@@ -111,9 +111,7 @@ function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () 
   const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
   const redZoneCount = selectBudgetStatuses(budgets, transactions, monthlyIncome, currentMonth)
     .filter(bs => bs.isInRedZone).length;
-  const visibleNavItems = navItems.filter(item => 
-    viewMode === "splitwise" ? item.title !== "Insights" : true
-  );
+  const visibleNavItems = navItems;
 
   return (
     <div className="flex flex-col h-full">

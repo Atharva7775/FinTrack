@@ -55,8 +55,6 @@ export interface Transaction {
   category: Category;
   date: string;
   note: string;
-  isSplitwise?: boolean;
-  splitwiseId?: number;
   originalCurrency?: string;
   originalAmount?: number;
   usdAmount?: number;
@@ -127,10 +125,6 @@ export interface HydratePayload {
   transactions: Transaction[];
   goals: Goal[];
   savingsBalance: number;
-  splitwiseKey: string | null;
-  splitwiseLastSync: string | null;
-  splitwiseBalances: { owe: number; owed: number } | null;
-  viewMode: "personal" | "splitwise";
   budgetSplit?: [number, number, number]; // [needs, wants, savings] as percentages (0-100)
   budgets?: Budget[]; // per-category monthly budgets
 }
@@ -139,16 +133,8 @@ interface FinanceStore {
   transactions: Transaction[];
   goals: Goal[];
   savingsBalance: number;
-  splitwiseKey: string | null;
-  splitwiseLastSync: string | null;
-  splitwiseBalances: { owe: number; owed: number } | null;
-  viewMode: "personal" | "splitwise";
   budgetSplit: [number, number, number];
   setBudgetSplit: (split: [number, number, number]) => void;
-  setViewMode: (mode: "personal" | "splitwise") => void;
-  setSplitwiseKey: (key: string | null) => void;
-  setSplitwiseLastSync: (dateStr: string) => void;
-  setSplitwiseBalances: (balances: { owe: number; owed: number } | null) => void;
   addTransaction: (t: Omit<Transaction, 'id'>) => void;
   deleteTransaction: (id: string) => void;
   updateTransaction: (id: string, t: Partial<Transaction>) => void;
@@ -186,10 +172,6 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
   transactions: [],
   goals: [],
   savingsBalance: 0,
-  splitwiseKey: null,
-  splitwiseLastSync: null,
-  splitwiseBalances: null,
-  viewMode: "personal",
   budgetSplit: [50, 30, 20],
   hasOnboarded: false,
   setHasOnboarded: (v) => set({ hasOnboarded: v }),
@@ -211,10 +193,6 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
   hasBudgetSetup: false,
   setHasBudgetSetup: (v) => set({ hasBudgetSetup: v }),
   setBudgetSplit: (split) => set({ budgetSplit: split }),
-  setViewMode: (mode) => set({ viewMode: mode }),
-  setSplitwiseKey: (key) => set({ splitwiseKey: key }),
-  setSplitwiseLastSync: (dateStr) => set({ splitwiseLastSync: dateStr }),
-  setSplitwiseBalances: (balances) => set({ splitwiseBalances: balances }),
   addTransaction: (t) => set((s) => ({
     transactions: [{ ...t, id: String(nextId++) }, ...s.transactions],
   })),
@@ -270,10 +248,6 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
       transactions: payload.transactions, 
       goals: payload.goals, 
       savingsBalance: payload.savingsBalance,
-      splitwiseKey: payload.splitwiseKey,
-      splitwiseLastSync: payload.splitwiseLastSync,
-      splitwiseBalances: payload.splitwiseBalances,
-      viewMode: payload.viewMode,
       budgetSplit: payload.budgetSplit || [50, 30, 20],
       budgets,
       hasBudgetSetup: budgets.length > 0,
@@ -285,10 +259,6 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
       transactions: [],
       goals: [],
       savingsBalance: 0,
-      splitwiseKey: null,
-      splitwiseLastSync: null,
-      splitwiseBalances: null,
-      viewMode: "personal",
       budgetSplit: [50, 30, 20],
       userCategoryType: {},
       hasOnboarded: false,

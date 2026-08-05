@@ -38,8 +38,6 @@ const options: swaggerJsdoc.Options = {
             },
             date: { type: "string", format: "date", example: "2026-04-01" },
             note: { type: "string", default: "" },
-            is_splitwise: { type: "boolean", default: false },
-            splitwise_id: { type: "integer", nullable: true },
             original_currency: { type: "string", nullable: true },
             original_amount: { type: "number", nullable: true },
             usd_amount: { type: "number", nullable: true },
@@ -108,8 +106,7 @@ const options: swaggerJsdoc.Options = {
             key: {
               type: "string",
               enum: [
-                "savings_balance","splitwise_key","splitwise_last_sync",
-                "splitwise_balances","view_mode","budget_split",
+                "savings_balance","budget_split",
               ],
             },
             value: {},

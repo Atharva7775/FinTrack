@@ -31,13 +31,8 @@ function getTimeBasedGreeting() {
 }
 
 export default function Dashboard() {
-  const { transactions: allTx, viewMode, splitwiseBalances, budgets, goals } = useFinanceStore();
+  const { transactions, budgets, goals } = useFinanceStore();
   const { user } = useAuth();
-  
-  const transactions = useMemo(
-    () => allTx.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise)),
-    [allTx, viewMode]
-  );
   
   const availableMonths = useMemo(
     () => getAvailableMonthKeys(transactions.map((t) => t.date)),
@@ -64,13 +59,8 @@ export default function Dashboard() {
   const monthTx = transactions.filter((t) => t.date.startsWith(selectedMonthKey));
   const last4Months = getLastNMonthsEndingAt(selectedMonthKey, 4);
 
-  const totalIncome = viewMode === "splitwise" 
-    ? (splitwiseBalances?.owed ?? 0)
-    : monthTx.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
-    
-  const totalExpense = viewMode === "splitwise"
-    ? (splitwiseBalances?.owe ?? 0)
-    : monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+  const totalIncome = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+  const totalExpense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
   
   const netSavings = totalIncome - totalExpense;
   const savingsRate = totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0;
@@ -137,14 +127,14 @@ export default function Dashboard() {
       {/* Modern Stat Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <SummaryCard 
-          title={viewMode === "splitwise" ? "You are owed" : "Total Income"}
+          title="Total Income"
           amount={totalIncome}
           icon={TrendingUp}
           color="income"
           description="Total cash inflow this month"
         />
         <SummaryCard 
-          title={viewMode === "splitwise" ? "You owe" : "Total Expenses"}
+          title="Total Expenses"
           amount={totalExpense}
           icon={TrendingDown}
           color="expense"

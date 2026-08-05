@@ -34,10 +34,6 @@ export function SupabaseSync() {
         transactions: SEED_TRANSACTIONS,
         goals: [],
         savingsBalance: 0,
-        splitwiseKey: null,
-        splitwiseLastSync: null,
-        splitwiseBalances: null,
-        viewMode: "personal",
       });
       useFinanceStore.getState().setHasOnboarded(true);
       useFinanceStore.getState().setIsHydrated(true);
@@ -55,7 +51,7 @@ export function SupabaseSync() {
       ]);
 
       if (data) {
-        if (data.transactions.length > 0 || data.goals.length > 0 || data.splitwiseKey || (data.budgets?.length ?? 0) > 0) {
+        if (data.transactions.length > 0 || data.goals.length > 0 || (data.budgets?.length ?? 0) > 0) {
           // Existing user with data — hydrate and mark as onboarded
           useFinanceStore.getState().hydrate(data);
           useFinanceStore.getState().setHasOnboarded(true);
@@ -82,10 +78,6 @@ export function SupabaseSync() {
           transactions: state.transactions,
           goals: state.goals,
           savingsBalance: state.savingsBalance,
-          splitwiseKey: state.splitwiseKey,
-          splitwiseLastSync: state.splitwiseLastSync,
-          splitwiseBalances: state.splitwiseBalances,
-          viewMode: state.viewMode,
           budgetSplit: state.budgetSplit,
           budgets: state.budgets,
         });

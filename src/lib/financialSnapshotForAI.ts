@@ -5,18 +5,8 @@ function txAmount(t: Transaction): number {
   return t.usdAmount ?? t.amount;
 }
 
-/** Filter transactions by view mode (same as Dashboard/Transactions). */
-export function filterTransactionsForView(
-  all: Transaction[],
-  viewMode: "personal" | "splitwise"
-): Transaction[] {
-  return all.filter((t) => (viewMode === "splitwise" ? t.isSplitwise : !t.isSplitwise));
-}
-
 export interface FinancialSnapshotForAI {
-  viewMode: "personal" | "splitwise";
   savingsBalance: number;
-  splitwiseBalances: { owe: number; owed: number } | null;
   /** Most recent month that has actual transaction data (YYYY-MM). */
   currentMonthKey: string;
   previousMonthKey: string;
@@ -66,7 +56,6 @@ export interface FinancialSnapshotForAI {
     category: string;
     date: string;
     note: string;
-    isSplitwise?: boolean;
     isPending?: boolean;
     originalCurrency?: string;
   }[];
@@ -82,11 +71,8 @@ export function buildFinancialSnapshotForAI(params: {
   transactions: Transaction[];
   goals: Goal[];
   savingsBalance: number;
-  viewMode: "personal" | "splitwise";
-  splitwiseBalances: { owe: number; owed: number } | null;
 }): FinancialSnapshotForAI {
-  const { transactions: allTx, goals, savingsBalance, viewMode, splitwiseBalances } = params;
-  const transactions = filterTransactionsForView(allTx, viewMode);
+  const { transactions, goals, savingsBalance } = params;
 
   // Use the most recent month that actually has data, not the real calendar month.
   // This prevents the AI from seeing an empty "current month" when the user hasn't
@@ -150,9 +136,7 @@ export function buildFinancialSnapshotForAI(params: {
   });
 
   return {
-    viewMode,
     savingsBalance,
-    splitwiseBalances,
     currentMonthKey,
     previousMonthKey,
     currentMonth: {
@@ -198,7 +182,6 @@ export function buildFinancialSnapshotForAI(params: {
       category: t.category,
       date: t.date,
       note: t.note,
-      isSplitwise: t.isSplitwise,
       isPending: t.isPending,
       originalCurrency: t.originalCurrency,
     })),

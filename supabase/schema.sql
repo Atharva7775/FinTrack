@@ -80,8 +80,6 @@ CREATE TABLE public.transactions (
   date date NOT NULL,
   note text NOT NULL DEFAULT ''::text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
-  is_splitwise boolean DEFAULT false,
-  splitwise_id bigint,
   original_currency text,
   original_amount numeric,
   usd_amount numeric,

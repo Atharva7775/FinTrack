@@ -1,7 +1,9 @@
 import { Router, Request, Response } from "express";
 import { getSupabase } from "../supabase";
+import { requireGoogleAuth, type AuthenticatedRequest } from "../middleware/requireGoogleAuth";
 
 export const transactionsRouter = Router();
+transactionsRouter.use(requireGoogleAuth);
 
 /**
  * @openapi
@@ -52,14 +54,16 @@ export const transactionsRouter = Router();
  *               $ref: '#/components/schemas/Error'
  */
 transactionsRouter.get("/", async (req: Request, res: Response) => {
+  const authenticatedReq = req as AuthenticatedRequest;
   const { user_email, type, from, to } = req.query as Record<string, string>;
-  if (!user_email) return res.status(400).json({ error: "user_email is required" });
+  const resolvedUserEmail = user_email || authenticatedReq.authUser?.email;
+  if (!resolvedUserEmail) return res.status(400).json({ error: "user_email is required" });
 
   try {
     let query = getSupabase()
       .from("transactions")
       .select("*")
-      .eq("user_email", user_email)
+      .eq("user_email", resolvedUserEmail)
       .order("date", { ascending: false });
 
     if (type) query = query.eq("type", type);
@@ -69,8 +73,8 @@ transactionsRouter.get("/", async (req: Request, res: Response) => {
     const { data, error } = await query;
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -113,22 +117,55 @@ transactionsRouter.get("/", async (req: Request, res: Response) => {
  *               $ref: '#/components/schemas/Error'
  */
 transactionsRouter.post("/", async (req: Request, res: Response) => {
+  const authenticatedReq = req as AuthenticatedRequest;
   const { user_email, ...rest } = req.body;
-  if (!user_email) return res.status(400).json({ error: "user_email is required" });
-  if (!rest.id || !rest.type || !rest.amount || !rest.category || !rest.date) {
+  const resolvedUserEmail = user_email || authenticatedReq.authUser?.email;
+
+  if (!resolvedUserEmail) return res.status(400).json({ error: "user_email is required" });
+  if (!rest.id || !rest.type || rest.amount == null || !rest.category || !rest.date) {
     return res.status(400).json({ error: "id, type, amount, category, date are required" });
   }
+
+  const sanitizedPayload = {
+    id: String(rest.id),
+    user_email: resolvedUserEmail,
+    type: String(rest.type),
+    amount: Number(rest.amount),
+    category: String(rest.category),
+    date: String(rest.date),
+    note: rest.note != null ? String(rest.note) : "",
+    source: rest.source != null ? String(rest.source) : "manual",
+    is_pending: Boolean(rest.is_pending ?? rest.isPending ?? false),
+    original_currency:
+      rest.original_currency != null
+        ? String(rest.original_currency)
+        : rest.originalCurrency != null
+          ? String(rest.originalCurrency)
+          : null,
+    original_amount:
+      rest.original_amount != null
+        ? Number(rest.original_amount)
+        : rest.originalAmount != null
+          ? Number(rest.originalAmount)
+          : null,
+    usd_amount:
+      rest.usd_amount != null
+        ? Number(rest.usd_amount)
+        : rest.usdAmount != null
+          ? Number(rest.usdAmount)
+          : null,
+  };
 
   try {
     const { data, error } = await getSupabase()
       .from("transactions")
-      .upsert({ ...rest, user_email }, { onConflict: "id" })
+      .upsert(sanitizedPayload, { onConflict: "id" })
       .select()
       .single();
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -163,18 +200,20 @@ transactionsRouter.post("/", async (req: Request, res: Response) => {
  *               $ref: '#/components/schemas/Error'
  */
 transactionsRouter.delete("/:id", async (req: Request, res: Response) => {
+  const authenticatedReq = req as AuthenticatedRequest;
   const { user_email } = req.query as Record<string, string>;
-  if (!user_email) return res.status(400).json({ error: "user_email is required" });
+  const resolvedUserEmail = user_email || authenticatedReq.authUser?.email;
+  if (!resolvedUserEmail) return res.status(400).json({ error: "user_email is required" });
 
   try {
     const { error } = await getSupabase()
       .from("transactions")
       .delete()
       .eq("id", req.params.id)
-      .eq("user_email", user_email);
+      .eq("user_email", resolvedUserEmail);
     if (error) throw error;
     res.status(204).send();
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });

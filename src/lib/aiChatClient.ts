@@ -20,8 +20,12 @@ export class RetryableError extends Error {
 /** Minimal conversational history used by Gemini internally in ScenarioLab. */
 type ChatTurn = { role: "user" | "assistant"; content: string };
 
+type GeminiPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } };
+
 export async function chatWithGemini(params: {
-  snapshot: any;
+  snapshot: FinancialSnapshotForAI | Record<string, unknown>;
   historyText: string;
   latestUserQuestion: string;
   apiKey: string;
@@ -29,6 +33,21 @@ export async function chatWithGemini(params: {
   systemPromptOverride?: string;
 }): Promise<string> {
   const { snapshot, historyText, latestUserQuestion, apiKey, attachment, systemPromptOverride } = params;
+  const textAttachment =
+    attachment && typeof attachment.data === "string" && !attachment.data.startsWith("data:")
+      ? attachment.data
+      : null;
+  const attachmentContext = textAttachment
+    ? [
+        "",
+        `Attached file: ${attachment?.name ?? "text attachment"} (${attachment?.type || "text/plain"})`,
+        "Use this attachment content as additional context:",
+        "```",
+        textAttachment.slice(0, 20000),
+        "```",
+      ].join("\n")
+    : "";
+
   const prompt = [
     systemPromptOverride || FINTRACK_AI_SYSTEM_PROMPT,
     "",
@@ -36,6 +55,7 @@ export async function chatWithGemini(params: {
     "Use it for numbers and trends; the conversation below may reference earlier turns without repeating this data.",
     "",
     JSON.stringify(snapshot, null, 2),
+    attachmentContext,
     "",
     "Conversation history:",
     historyText,
@@ -43,7 +63,7 @@ export async function chatWithGemini(params: {
     `User: ${latestUserQuestion}`,
   ].join("\n");
 
-  const parts: any[] = [{ text: prompt }];
+  const parts: GeminiPart[] = [{ text: prompt }];
   
   if (attachment && attachment.data.startsWith("data:")) {
     // Media attachment (Image/PDF)

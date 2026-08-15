@@ -1,9 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Plus, Trash2, Target, Wallet, Zap, LogIn, PiggyBank, Settings2, TrendingUp, ChevronLeft, ChevronRight, Copy } from "lucide-react";
 import { useFinanceStore, type Goal, type GoalMilestone, selectBudgetStatuses, type Budget, type BudgetStatus } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
-import { useBudgetAlerts } from "@/hooks/useBudgetAlerts";
 import { CursorTooltip } from "@/components/CursorTooltip";
 import { BudgetSetupWizard } from "@/components/BudgetSetupWizard";
 import { Button } from "@/components/ui/button";
@@ -11,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { getCurrentMonthKey, getLastNMonths, getMonthLabel, getPrevMonthKey } from "@/lib/utils";
+import { getCurrentMonthKey, getLastNMonths, getMonthLabel } from "@/lib/utils";
 import { GoalOptimizerModal } from "@/components/GoalOptimizerModal";
 import { saveBudget, deleteBudgetRow } from "@/lib/supabaseSync";
 import { toast } from "sonner";
@@ -190,9 +189,7 @@ export default function Goals() {
   const currentMonth = getCurrentMonthKey();
   const [selectedBudgetMonth, setSelectedBudgetMonth] = useState(currentMonth);
   const isCurrentMonth = selectedBudgetMonth === currentMonth;
-  const monthOptions = getLastNMonths(12).reverse(); // oldest first → newest last
-
-  useBudgetAlerts();
+  const monthOptions = getLastNMonths(12); // oldest first -> newest last
 
   // Income and status for the selected budget month
   const rawMonthlyIncome = transactions
@@ -205,7 +202,11 @@ export default function Goals() {
   const budgetStatuses = selectBudgetStatuses(monthBudgets, transactions, monthlyIncome, selectedBudgetMonth);
 
   // For "copy from last month" functionality
-  const prevMonthKey = getPrevMonthKey();
+  const prevMonthKey = useMemo(() => {
+    const [year, month] = selectedBudgetMonth.split("-").map(Number);
+    const prev = new Date(year, month - 2, 1);
+    return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+  }, [selectedBudgetMonth]);
   const prevMonthBudgets = budgets.filter(b => b.month === prevMonthKey);
 
   const hasBudgetsForSelectedMonth = monthBudgets.length > 0;
@@ -355,7 +356,13 @@ export default function Goals() {
                           <button onClick={() => setEditBudget(budget)} className="p-1.5 rounded-lg hover:bg-accent transition-colors">
                             <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
                           </button>
-                          <button onClick={() => { deleteBudget(budget.id); toast.success(`Removed ${bs.category} budget`); }} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
+                          <button onClick={async () => {
+                            deleteBudget(budget.id);
+                            if (user?.email) {
+                              await deleteBudgetRow(budget.id);
+                            }
+                            toast.success(`Removed ${bs.category} budget`);
+                          }} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
                             <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
                           </button>
                         </div>
@@ -630,7 +637,15 @@ export default function Goals() {
           onSave={async (updated) => {
             if (user?.email) {
               const result = await saveBudget(user.email, updated);
-              updateBudget(updated.id, result ?? updated);
+              if (result) {
+                const currentBudgets = useFinanceStore.getState().budgets;
+                const nextBudgets = currentBudgets.map((b) =>
+                  b.category === result.category && b.month === result.month ? result : b
+                );
+                setBudgets(nextBudgets);
+              } else {
+                updateBudget(updated.id, updated);
+              }
             } else {
               updateBudget(updated.id, updated);
             }

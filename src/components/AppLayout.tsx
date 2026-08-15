@@ -22,6 +22,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useFinanceStore, selectBudgetStatuses } from "@/store/financeStore";
 import { getCurrentMonthKey } from "@/lib/utils";
 import { useRealtimeSync } from "@/hooks/useRealtimeSync";
+import { useBudgetAlerts } from "@/hooks/useBudgetAlerts";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard, tooltip: "View your monthly income, expenses, savings, and charts at a glance." },
@@ -37,6 +38,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const { user } = useAuth();
   useRealtimeSync(user?.email);
+  useBudgetAlerts();
 
   return (
     <div className="flex min-h-screen w-full bg-background">
@@ -109,7 +111,12 @@ function SidebarContent({ pathname, onClose }: { pathname: string; onClose?: () 
     .reduce((sum, t) => sum + t.amount, 0);
   const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
   const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
-  const redZoneCount = selectBudgetStatuses(budgets, transactions, monthlyIncome, currentMonth)
+  const redZoneCount = selectBudgetStatuses(
+    budgets.filter((budget) => budget.month === currentMonth),
+    transactions,
+    monthlyIncome,
+    currentMonth
+  )
     .filter(bs => bs.isInRedZone).length;
   const visibleNavItems = navItems;
 

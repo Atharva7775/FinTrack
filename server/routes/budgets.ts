@@ -48,8 +48,8 @@ budgetsRouter.get("/", async (req: Request, res: Response) => {
     const { data, error } = await query;
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -101,8 +101,8 @@ budgetsRouter.post("/", async (req: Request, res: Response) => {
       .single();
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -133,8 +133,8 @@ budgetsRouter.delete("/:id", async (req: Request, res: Response) => {
       .eq("id", req.params.id);
     if (error) throw error;
     res.status(204).send();
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -182,8 +182,8 @@ budgetsRouter.get("/snapshots", async (req: Request, res: Response) => {
     const { data, error } = await query;
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -228,7 +228,7 @@ budgetsRouter.post("/snapshots", async (req: Request, res: Response) => {
       .single();
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });

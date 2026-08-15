@@ -40,13 +40,6 @@ export default function Dashboard() {
   );
 
   const currentKey = getCurrentMonthKey();
-  const rawMonthlyIncome = transactions
-    .filter(t => t.type === 'income' && t.date.startsWith(currentKey))
-    .reduce((sum, t) => sum + t.amount, 0);
-  const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
-  const monthlyIncome = Math.max(rawMonthlyIncome - totalGoalSavings, 0);
-  const alertBudgets = selectBudgetStatuses(budgets.filter(b => b.month === currentKey), transactions, monthlyIncome, currentKey)
-    .filter(bs => bs.status === 'warning' || bs.status === 'danger' || bs.status === 'exceeded');
   const defaultMonth = availableMonths.includes(currentKey) ? currentKey : availableMonths[availableMonths.length - 1] ?? currentKey;
   const [selectedMonthKey, setSelectedMonthKey] = useState(defaultMonth);
 
@@ -61,6 +54,14 @@ export default function Dashboard() {
 
   const totalIncome = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
   const totalExpense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + (t.usdAmount ?? t.amount), 0);
+  const totalGoalSavings = goals.reduce((s, g) => s + g.monthlyContribution, 0);
+  const selectedMonthIncome = Math.max(totalIncome - totalGoalSavings, 0);
+  const alertBudgets = selectBudgetStatuses(
+    budgets.filter((b) => b.month === selectedMonthKey),
+    transactions,
+    selectedMonthIncome,
+    selectedMonthKey
+  ).filter((bs) => bs.status === "warning" || bs.status === "danger" || bs.status === "exceeded");
   
   const netSavings = totalIncome - totalExpense;
   const savingsRate = totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0;
@@ -251,7 +252,7 @@ export default function Dashboard() {
 interface SummaryCardProps {
   title: string;
   amount: number;
-  icon: any;
+  icon: React.ElementType;
   color: "income" | "expense" | "savings" | "warning";
   description: string;
   suffix?: string;

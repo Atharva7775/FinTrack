@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { TrendingDown, Trash2, ArrowRight, Zap, Target, DollarSign, Sparkles } from "lucide-react";
 import { useFinanceStore, expenseCategories } from "@/store/financeStore";
@@ -20,6 +20,7 @@ const item = {
 export default function WeeklyWaste() {
   const { transactions } = useFinanceStore();
   const navigate = useNavigate();
+  const lastAlertedSavingRef = useRef<number>(0);
   
   const wasteAnalysis = useMemo(() => {
     const today = new Date();
@@ -65,13 +66,15 @@ export default function WeeklyWaste() {
 
   const { toast } = useToast();
   useEffect(() => {
-    if (wasteAnalysis.totalPotentialSaving > 50) {
+    const rounded = Math.round(wasteAnalysis.totalPotentialSaving);
+    if (rounded > 50 && rounded !== lastAlertedSavingRef.current) {
+      lastAlertedSavingRef.current = rounded;
       toast({
         title: "Weekly Leak Detected!",
-        description: `Potential $${Math.round(wasteAnalysis.totalPotentialSaving)}/mo leak in your spending.`,
+        description: `Potential $${rounded}/mo leak in your spending.`,
       });
     }
-  }, []); // Only on mount
+  }, [wasteAnalysis.totalPotentialSaving, toast]);
 
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-8 pb-12">

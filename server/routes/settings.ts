@@ -47,8 +47,8 @@ settingsRouter.get("/", async (req: Request, res: Response) => {
     const result: Record<string, unknown> = {};
     (data || []).forEach((row) => (result[row.key] = row.value));
     res.json(result);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -112,7 +112,7 @@ settingsRouter.put("/", async (req: Request, res: Response) => {
       .select("key, value");
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });

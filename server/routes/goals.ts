@@ -44,7 +44,7 @@ goalsRouter.get("/", async (req: Request, res: Response) => {
     if (goalsRes.error) throw goalsRes.error;
     if (contribRes.error) throw contribRes.error;
 
-    const contribMap: Record<string, any[]> = {};
+    const contribMap: Record<string, { goal_id: string; amount: number; date: string }[]> = {};
     (contribRes.data || []).forEach((c) => {
       contribMap[c.goal_id] = [...(contribMap[c.goal_id] ?? []), c];
     });
@@ -55,8 +55,8 @@ goalsRouter.get("/", async (req: Request, res: Response) => {
     }));
 
     res.json(goals);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -102,8 +102,8 @@ goalsRouter.post("/", async (req: Request, res: Response) => {
       .single();
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -142,8 +142,8 @@ goalsRouter.delete("/:id", async (req: Request, res: Response) => {
       .eq("user_email", user_email);
     if (error) throw error;
     res.status(204).send();
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -181,8 +181,8 @@ goalsRouter.get("/:id/contributions", async (req: Request, res: Response) => {
       .order("date", { ascending: false });
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -237,7 +237,7 @@ goalsRouter.post("/:id/contributions", async (req: Request, res: Response) => {
       .single();
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });

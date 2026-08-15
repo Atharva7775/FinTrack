@@ -12,7 +12,6 @@ import type { Transaction } from "@/store/financeStore";
  */
 export function useRealtimeSync(userEmail: string | null | undefined) {
   const channelRef = useRef<ReturnType<NonNullable<ReturnType<typeof getSupabase>>["channel"]> | null>(null);
-  const addTransaction = useFinanceStore((s) => s.addTransaction);
   const updateTransaction = useFinanceStore((s) => s.updateTransaction);
 
   useEffect(() => {
@@ -37,10 +36,12 @@ export function useRealtimeSync(userEmail: string | null | undefined) {
         },
         (payload) => {
           const r = payload.new as Record<string, unknown>;
-          // Only auto-add rows from the bot — manual inserts go through the store directly
-          if (String(r.source ?? "manual") !== "telegram_bot") return;
+          const source = String(r.source ?? "manual");
+          // Keep web store in sync with out-of-band sources (bot + mobile).
+          if (source !== "telegram_bot" && source !== "mobile") return;
 
-          const tx: Omit<Transaction, "id"> = {
+          const tx: Transaction = {
+            id: String(r.id),
             type: String(r.type) as Transaction["type"],
             amount: Number(r.amount),
             category: String(r.category) as Transaction["category"],
@@ -50,10 +51,18 @@ export function useRealtimeSync(userEmail: string | null | undefined) {
             originalAmount: r.original_amount != null ? Number(r.original_amount) : undefined,
             usdAmount: r.usd_amount != null ? Number(r.usd_amount) : undefined,
             isPending: Boolean(r.is_pending ?? false),
+            source,
           };
 
-          // Use the DB-assigned id so we don't duplicate on next hydrate
-          addTransaction(tx);
+          useFinanceStore.setState((state) => {
+            const idx = state.transactions.findIndex((t) => t.id === tx.id);
+            if (idx >= 0) {
+              const next = [...state.transactions];
+              next[idx] = { ...next[idx], ...tx };
+              return { transactions: next };
+            }
+            return { transactions: [tx, ...state.transactions] };
+          });
         }
       )
       .on(
@@ -66,12 +75,14 @@ export function useRealtimeSync(userEmail: string | null | undefined) {
         },
         (payload) => {
           const r = payload.new as Record<string, unknown>;
-          if (String(r.source ?? "manual") !== "telegram_bot") return;
+          const source = String(r.source ?? "manual");
+          if (source !== "telegram_bot" && source !== "mobile") return;
           updateTransaction(String(r.id), {
             amount: Number(r.amount),
             category: String(r.category) as Transaction["category"],
             date: String(r.date),
             note: String(r.note ?? ""),
+            source,
           });
         }
       )
@@ -85,5 +96,5 @@ export function useRealtimeSync(userEmail: string | null | undefined) {
         channelRef.current = null;
       }
     };
-  }, [userEmail, addTransaction, updateTransaction]);
+  }, [userEmail, updateTransaction]);
 }

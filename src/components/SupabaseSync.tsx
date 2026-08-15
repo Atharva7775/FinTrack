@@ -4,8 +4,42 @@ import { useAuth } from "@/hooks/useAuth";
 import { getSupabase } from "@/lib/supabase";
 import { fetchFromSupabase, persistToSupabase, fetchOnboardingStatus } from "@/lib/supabaseSync";
 import { SEED_TRANSACTIONS } from "@/lib/seedData";
+import type { HydratePayload } from "@/store/financeStore";
 
 const PERSIST_DEBOUNCE_MS = 1500;
+const LOCAL_FALLBACK_KEY_PREFIX = "fintrack_local_state_v1";
+
+function localFallbackKey(userEmail: string) {
+  return `${LOCAL_FALLBACK_KEY_PREFIX}:${userEmail.toLowerCase()}`;
+}
+
+function readLocalFallback(userEmail: string): HydratePayload | null {
+  try {
+    const raw = localStorage.getItem(localFallbackKey(userEmail));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<HydratePayload>;
+    if (!Array.isArray(parsed.transactions) || !Array.isArray(parsed.goals)) return null;
+    return {
+      transactions: parsed.transactions,
+      goals: parsed.goals,
+      savingsBalance: Number(parsed.savingsBalance ?? 0),
+      budgetSplit: Array.isArray(parsed.budgetSplit) && parsed.budgetSplit.length === 3
+        ? (parsed.budgetSplit as [number, number, number])
+        : [50, 30, 20],
+      budgets: Array.isArray(parsed.budgets) ? parsed.budgets : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalFallback(userEmail: string, payload: HydratePayload) {
+  try {
+    localStorage.setItem(localFallbackKey(userEmail), JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota or serialization errors.
+  }
+}
 
 /**
  * If Supabase env is set: on mount (or when the logged-in user changes) loads
@@ -15,6 +49,7 @@ const PERSIST_DEBOUNCE_MS = 1500;
 export function SupabaseSync() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHydratedRef = useRef(false);
+  const latestPayloadRef = useRef<HydratePayload | null>(null);
   const { user, isLoading: authLoading } = useAuth();
 
   useEffect(() => {
@@ -28,21 +63,62 @@ export function SupabaseSync() {
       return;
     }
 
-    // Without Supabase: load seed data and skip onboarding
+    // Without Supabase: load local fallback state (or seed data) and persist locally.
     if (!getSupabase()) {
-      useFinanceStore.getState().hydrate({
-        transactions: SEED_TRANSACTIONS,
-        goals: [],
-        savingsBalance: 0,
-      });
+      const userEmail = user.email;
+      const local = readLocalFallback(userEmail);
+      useFinanceStore.getState().hydrate(
+        local ?? {
+          transactions: SEED_TRANSACTIONS,
+          goals: [],
+          savingsBalance: 0,
+          budgetSplit: [50, 30, 20],
+          budgets: [],
+        }
+      );
       useFinanceStore.getState().setHasOnboarded(true);
       useFinanceStore.getState().setIsHydrated(true);
       isHydratedRef.current = true;
-      return;
+
+      const persistLocalNow = () => {
+        const payload = latestPayloadRef.current;
+        if (!payload) return;
+        writeLocalFallback(userEmail, payload);
+      };
+
+      const unsub = useFinanceStore.subscribe((state) => {
+        if (!isHydratedRef.current) return;
+        latestPayloadRef.current = {
+          transactions: state.transactions,
+          goals: state.goals,
+          savingsBalance: state.savingsBalance,
+          budgetSplit: state.budgetSplit,
+          budgets: state.budgets,
+        };
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => {
+          timeoutRef.current = null;
+          persistLocalNow();
+        }, PERSIST_DEBOUNCE_MS);
+      });
+
+      return () => {
+        unsub();
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+        }
+        persistLocalNow();
+      };
     }
 
     const userEmail = user.email;
     isHydratedRef.current = false;
+    const persistRemoteNow = () => {
+      const payload = latestPayloadRef.current;
+      if (!payload) return;
+      void persistToSupabase(userEmail, payload);
+    };
 
     (async () => {
       const [data, hasOnboarded] = await Promise.all([
@@ -71,22 +147,28 @@ export function SupabaseSync() {
 
     const unsub = useFinanceStore.subscribe((state) => {
       if (!isHydratedRef.current) return;
+      latestPayloadRef.current = {
+        transactions: state.transactions,
+        goals: state.goals,
+        savingsBalance: state.savingsBalance,
+        budgetSplit: state.budgetSplit,
+        budgets: state.budgets,
+      };
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(() => {
         timeoutRef.current = null;
-        persistToSupabase(userEmail, {
-          transactions: state.transactions,
-          goals: state.goals,
-          savingsBalance: state.savingsBalance,
-          budgetSplit: state.budgetSplit,
-          budgets: state.budgets,
-        });
+        persistRemoteNow();
       }, PERSIST_DEBOUNCE_MS);
     });
 
     return () => {
       unsub();
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      // Best-effort flush so closing/reloading right after edits does not lose changes.
+      persistRemoteNow();
     };
   }, [user, authLoading]);
 

@@ -168,13 +168,22 @@ export default function SettingsPage() {
   };
 
   const handleRestoreDemoData = () => {
+    let restored = 0;
     SEED_TRANSACTIONS.forEach(t => {
-      // Avoid exact duplicates if they hit it multiple times
-      if (!transactions.some(existing => existing.id === t.id)) {
+      // Compare by payload fields, not id, because store-generated ids differ from seed ids.
+      const alreadyExists = transactions.some((existing) =>
+        existing.type === t.type &&
+        existing.category === t.category &&
+        existing.date === t.date &&
+        existing.note === t.note &&
+        (existing.usdAmount ?? existing.amount) === (t.usdAmount ?? t.amount)
+      );
+      if (!alreadyExists) {
         addTransaction(t);
+        restored += 1;
       }
     });
-    toast.success("Demo transactions restored");
+    toast.success(restored > 0 ? `Restored ${restored} demo transaction${restored === 1 ? "" : "s"}` : "Demo data is already present");
   };
 
   return (

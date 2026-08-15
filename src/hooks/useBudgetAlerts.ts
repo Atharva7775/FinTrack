@@ -58,5 +58,5 @@ export function useBudgetAlerts() {
         },
       });
     }
-  }, [budgets, transactions, navigate, setPendingPrompt]);
+  }, [budgets, transactions, goals, navigate, setPendingPrompt]);
 }

@@ -10,6 +10,8 @@ interface GoogleTokenInfo {
   picture?: string;
 }
 
+const DEV_DEMO_TOKEN = "demo-google-id-token";
+
 export interface AuthenticatedRequest extends Request {
   authUser?: {
     email: string;
@@ -30,6 +32,21 @@ function extractBearerToken(req: Request) {
   if (!scheme || !token) return null;
   if (scheme.toLowerCase() !== "bearer") return null;
   return token.trim();
+}
+
+function extractEmailFromRequest(req: Request): string | null {
+  const headerEmail = req.header("x-dev-user-email");
+  if (headerEmail && headerEmail.includes("@")) return headerEmail.trim().toLowerCase();
+
+  const body = req.body as Record<string, unknown> | undefined;
+  const bodyEmail = typeof body?.user_email === "string" ? body.user_email : null;
+  if (bodyEmail && bodyEmail.includes("@")) return bodyEmail.trim().toLowerCase();
+
+  const query = req.query as Record<string, unknown>;
+  const queryEmail = typeof query?.user_email === "string" ? query.user_email : null;
+  if (queryEmail && queryEmail.includes("@")) return queryEmail.trim().toLowerCase();
+
+  return null;
 }
 
 async function verifyGoogleIdToken(idToken: string) {
@@ -77,6 +94,24 @@ export async function requireGoogleAuth(
       return res.status(401).json({
         error: "Missing Authorization bearer token",
       });
+    }
+
+    // Development bridge for mobile demo auth flows. This allows end-to-end
+    // transaction sync by email without a real Google OAuth flow on mobile yet.
+    if (process.env.NODE_ENV !== "production" && idToken === DEV_DEMO_TOKEN) {
+      const email = extractEmailFromRequest(req);
+      if (!email) {
+        return res.status(401).json({
+          error: "Missing demo user email for development auth",
+        });
+      }
+
+      (req as AuthenticatedRequest).authUser = {
+        email,
+        sub: `demo:${email}`,
+        name: email.split("@")[0],
+      };
+      return next();
     }
 
     const authUser = await verifyGoogleIdToken(idToken);

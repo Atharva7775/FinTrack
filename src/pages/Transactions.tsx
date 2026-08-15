@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Trash2, Edit2, Download, Mail } from "lucide-react";
 import { useFinanceStore, type Transaction, type Category, incomeCategories, expenseCategories, type TransactionType } from "@/store/financeStore";
@@ -53,6 +53,12 @@ export default function Transactions() {
     return [...result].sort((a, b) => b.date.localeCompare(a.date));
   }, [transactions, selectedMonthKey, filter]);
 
+  useEffect(() => {
+    if (!availableMonths.includes(selectedMonthKey)) {
+      setSelectedMonthKey(availableMonths[availableMonths.length - 1] ?? currentMonthKey);
+    }
+  }, [availableMonths, selectedMonthKey, currentMonthKey]);
+
   if (!authLoading && !user) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center">
@@ -63,6 +69,7 @@ export default function Transactions() {
         <p className="text-muted-foreground text-sm max-w-xs">
           Your transaction history is private and tied to your account. Sign in to view, add, and export transactions.
         </p>
+        <Button onClick={signIn}>Sign in with Google</Button>
       </div>
     );
   }

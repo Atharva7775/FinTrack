@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -19,12 +19,12 @@ import {
   Download,
   Sheet,
 } from "lucide-react";
-import { useFinanceStore, type Budget } from "@/store/financeStore";
+import { useFinanceStore, type Budget, type Category, type GoalType } from "@/store/financeStore";
 import { useChatStore } from "@/store/chatStore";
 import { useAuth } from "@/hooks/useAuth";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { buildFinancialContext, buildSystemPrompt } from "@/lib/aiContextBuilder";
-import { chatWithGemini, getAiProvider, RetryableError } from "@/lib/aiChatClient";
+import { chatWithGemini, RetryableError } from "@/lib/aiChatClient";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CursorTooltip } from "@/components/CursorTooltip";
@@ -119,6 +119,34 @@ interface ChatMessage {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+const CATEGORY_VALUES = new Set<Category>([
+  "Salary",
+  "Freelance",
+  "Investments",
+  "Other Income",
+  "Rent",
+  "Food",
+  "Travel",
+  "Subscriptions",
+  "Shopping",
+  "Utilities",
+  "Healthcare",
+  "Entertainment",
+  "Education",
+  "Savings",
+  "Other",
+]);
+
+const GOAL_TYPE_VALUES = new Set<GoalType>(["savings", "budget"]);
+
+function asCategory(value: unknown): Category | null {
+  return typeof value === "string" && CATEGORY_VALUES.has(value as Category) ? (value as Category) : null;
+}
+
+function asGoalType(value: unknown): GoalType | null {
+  return typeof value === "string" && GOAL_TYPE_VALUES.has(value as GoalType) ? (value as GoalType) : null;
 }
 
 const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.05 } } };
@@ -248,7 +276,7 @@ function stripJsonBlocks(text: string): string {
 }
 
 export default function ScenarioLab() {
-  const { transactions, goals, savingsBalance, budgets: storeBudgets, setBudgets, addGoalContribution, setSavingsBalance, deleteBudget } = useFinanceStore();
+  const { goals, budgets: storeBudgets, setBudgets, addGoalContribution, setSavingsBalance, deleteBudget } = useFinanceStore();
   const { user, idToken, isLoading: authLoading } = useAuth();
 
   const [sessions, setSessions] = useState<StoredChatSession[]>([]);
@@ -591,7 +619,7 @@ export default function ScenarioLab() {
                 useFinanceStore.getState().addTransaction({
                   type: String(txObj.type) as "income" | "expense",
                   amount: Number(txObj.amount),
-                  category: String(txObj.category),
+                  category: asCategory(txObj.category) ?? "Other",
                   date: typeof txObj.date === "string" ? txObj.date : new Date().toISOString().split("T")[0],
                   note: typeof txObj.note === "string" ? txObj.note : "Added via FinTrack AI",
                 });
@@ -628,7 +656,7 @@ export default function ScenarioLab() {
               currentAmount: Number(g.currentAmount) || 0,
               deadline: typeof g.deadline === "string" ? g.deadline : "",
               monthlyContribution: Number(g.monthlyContribution) || 0,
-              type: typeof g.type === "string" ? g.type : 'savings',
+              type: asGoalType(g.type) ?? "savings",
               isShared: !!g.isShared,
               members: Array.isArray(g.members) ? g.members : []
             });

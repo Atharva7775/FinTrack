@@ -38,8 +38,8 @@ onboardingRouter.get("/:user_email", async (req: Request, res: Response) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "No onboarding record found" });
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -93,8 +93,8 @@ onboardingRouter.post("/", async (req: Request, res: Response) => {
       .single();
     if (error) throw error;
     res.json(data);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -124,7 +124,7 @@ onboardingRouter.delete("/:user_email", async (req: Request, res: Response) => {
       .eq("user_email", req.params.user_email);
     if (error) throw error;
     res.status(204).send();
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });

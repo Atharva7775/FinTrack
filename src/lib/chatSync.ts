@@ -1,4 +1,4 @@
-import { getSupabase } from "./supabase";
+import { apiFetch } from "./apiClient";
 
 export interface StoredChatSession {
   id: string;
@@ -11,6 +11,19 @@ export interface StoredChatMessage {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+}
+
+interface ServerChatSession {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+interface ServerChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
 }
 
 interface LocalChatSession extends StoredChatSession {
@@ -106,58 +119,49 @@ function listLocalMessages(sessionId: string): StoredChatMessage[] {
 }
 
 /** Load all chat sessions for a user, newest first. */
-export async function fetchChatSessions(userEmail: string): Promise<StoredChatSession[]> {
+export async function fetchChatSessions(idToken: string | null, userEmail: string): Promise<StoredChatSession[]> {
   const localSessions = listLocalSessionsForUser(userEmail);
-  const supabase = getSupabase();
-  if (!supabase) return localSessions;
-  const { data, error } = await supabase
-    .from("ai_chat_sessions")
-    .select("id, name, created_at")
-    .eq("user_email", userEmail)
-    .order("created_at", { ascending: false });
-  if (error) {
+  if (!idToken) return localSessions;
+
+  try {
+    const data = await apiFetch<ServerChatSession[]>("/api/chat-history/sessions", idToken);
+    const remoteSessions = data.map((r) => ({ id: r.id, name: r.name, createdAt: r.created_at }));
+    const merged = new Map<string, StoredChatSession>();
+    for (const s of localSessions) merged.set(s.id, s);
+    for (const s of remoteSessions) merged.set(s.id, s);
+    return Array.from(merged.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  } catch (error) {
     console.error("FinTrack: failed to fetch chat sessions", error);
     return localSessions;
   }
-
-  const remoteSessions = (data ?? []).map((r) => ({ id: r.id, name: r.name, createdAt: r.created_at }));
-  const merged = new Map<string, StoredChatSession>();
-  for (const s of localSessions) merged.set(s.id, s);
-  for (const s of remoteSessions) merged.set(s.id, s);
-  return Array.from(merged.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /** Create a new chat session and return its id. */
-export async function createChatSession(userEmail: string, name: string): Promise<string | null> {
-  const supabase = getSupabase();
-  if (!supabase) {
+export async function createChatSession(idToken: string | null, userEmail: string, name: string): Promise<string | null> {
+  if (!idToken) {
     const localId = makeLocalSessionId();
     upsertLocalSession({ id: localId, userEmail, name, createdAt: new Date().toISOString(), messages: [] });
     return localId;
   }
 
-  const { data, error } = await supabase
-    .from("ai_chat_sessions")
-    .insert({ user_email: userEmail, name })
-    .select("id")
-    .single();
-  if (error) {
+  try {
+    const data = await apiFetch<ServerChatSession>("/api/chat-history/sessions", idToken, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    // Keep a local mirror so history still appears if subsequent network writes fail.
+    ensureLocalSession(data.id, userEmail, name);
+    return data.id;
+  } catch (error) {
     console.error("FinTrack: failed to create chat session", error);
     const localId = makeLocalSessionId();
     upsertLocalSession({ id: localId, userEmail, name, createdAt: new Date().toISOString(), messages: [] });
     return localId;
   }
-
-  const sessionId = data?.id ?? null;
-  if (sessionId) {
-    // Keep a local mirror so history still appears if subsequent network writes fail.
-    ensureLocalSession(sessionId, userEmail, name);
-  }
-  return sessionId;
 }
 
 /** Rename an existing session. */
-export async function renameChatSession(sessionId: string, name: string): Promise<void> {
+export async function renameChatSession(idToken: string | null, sessionId: string, name: string): Promise<void> {
   const all = readLocalSessions();
   const idx = all.findIndex((s) => s.id === sessionId);
   if (idx >= 0) {
@@ -165,82 +169,74 @@ export async function renameChatSession(sessionId: string, name: string): Promis
     writeLocalSessions(all);
   }
 
-  const supabase = getSupabase();
-  if (!supabase) return;
-  const { error } = await supabase.from("ai_chat_sessions").update({ name }).eq("id", sessionId);
-  if (error) {
+  if (!idToken || sessionId.startsWith("local-")) return;
+  try {
+    await apiFetch(`/api/chat-history/sessions/${sessionId}`, idToken, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    });
+  } catch (error) {
     console.error("FinTrack: failed to rename chat session", error);
   }
 }
 
 /** Delete a session (cascades to messages via FK). */
-export async function deleteChatSession(sessionId: string): Promise<void> {
+export async function deleteChatSession(idToken: string | null, sessionId: string): Promise<void> {
   writeLocalSessions(readLocalSessions().filter((s) => s.id !== sessionId));
 
-  const supabase = getSupabase();
-  if (!supabase) return;
-  const { error } = await supabase.from("ai_chat_sessions").delete().eq("id", sessionId);
-  if (error) {
+  if (!idToken || sessionId.startsWith("local-")) return;
+  try {
+    await apiFetch(`/api/chat-history/sessions/${sessionId}`, idToken, { method: "DELETE" });
+  } catch (error) {
     console.error("FinTrack: failed to delete chat session", error);
   }
 }
 
 /** Fetch all messages for a session, chronological order. */
-export async function fetchSessionMessages(sessionId: string): Promise<StoredChatMessage[]> {
-  const supabase = getSupabase();
-  if (!supabase || sessionId.startsWith("local-")) return listLocalMessages(sessionId);
+export async function fetchSessionMessages(idToken: string | null, sessionId: string): Promise<StoredChatMessage[]> {
+  if (!idToken || sessionId.startsWith("local-")) return listLocalMessages(sessionId);
 
-  const { data, error } = await supabase
-    .from("ai_chat_messages")
-    .select("id, role, content, created_at")
-    .eq("session_id", sessionId)
-    .order("created_at", { ascending: true });
-  if (error) {
+  try {
+    const data = await apiFetch<ServerChatMessage[]>(`/api/chat-history/sessions/${sessionId}/messages`, idToken);
+    const remoteMessages = data.map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      createdAt: r.created_at,
+    }));
+
+    // Merge local + remote for resilience; remote keeps canonical IDs.
+    const local = listLocalMessages(sessionId);
+    const merged = new Map<string, StoredChatMessage>();
+    for (const m of local) merged.set(m.id, m);
+    for (const m of remoteMessages) merged.set(m.id, m);
+    return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  } catch (error) {
     console.error("FinTrack: failed to fetch messages", error);
     return listLocalMessages(sessionId);
   }
-
-  const remoteMessages = (data ?? []).map((r) => ({
-    id: r.id,
-    role: r.role as "user" | "assistant",
-    content: r.content,
-    createdAt: r.created_at,
-  }));
-
-  // Merge local + remote for resilience; remote keeps canonical IDs.
-  const local = listLocalMessages(sessionId);
-  const merged = new Map<string, StoredChatMessage>();
-  for (const m of local) merged.set(m.id, m);
-  for (const m of remoteMessages) merged.set(m.id, m);
-  return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 /** Persist a single message to a session. */
 export async function saveMessage(
+  idToken: string | null,
   sessionId: string,
   userEmail: string,
   role: "user" | "assistant",
   content: string
 ): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase) {
-    appendLocalMessage(sessionId, userEmail, role, content);
-    return;
-  }
-
   // Local-only sessions cannot be persisted to UUID FK columns.
-  if (sessionId.startsWith("local-")) {
+  if (!idToken || sessionId.startsWith("local-")) {
     appendLocalMessage(sessionId, userEmail, role, content);
     return;
   }
 
-  const { error } = await supabase.from("ai_chat_messages").insert({
-    session_id: sessionId,
-    user_email: userEmail,
-    role,
-    content,
-  });
-  if (error) {
+  try {
+    await apiFetch(`/api/chat-history/sessions/${sessionId}/messages`, idToken, {
+      method: "POST",
+      body: JSON.stringify({ role, content }),
+    });
+  } catch (error) {
     console.error("FinTrack: failed to save chat message", error);
     appendLocalMessage(sessionId, userEmail, role, content);
   }

@@ -319,10 +319,10 @@ export default function ScenarioLab() {
   const startNewSession = useCallback(
     async (userName?: string | null): Promise<string> => {
       const greeting = greetingMessage(userName);
-      if (supabaseConfigured && user?.email) {
-        const id = await createChatSession(user.email, "New Chat");
+      if (supabaseConfigured && user?.email && idToken) {
+        const id = await createChatSession(idToken, user.email, "New Chat");
         if (id) {
-          await saveMessage(id, user.email, "assistant", greeting.content);
+          await saveMessage(idToken, id, user.email, "assistant", greeting.content);
           const newSession: StoredChatSession = { id, name: "New Chat", createdAt: new Date().toISOString() };
           setSessions((prev) => [newSession, ...prev]);
           setActiveSessionId(id);
@@ -340,7 +340,7 @@ export default function ScenarioLab() {
       sessionStorage.setItem(SESSION_STORAGE_KEY, fallbackId);
       return fallbackId;
     },
-    [supabaseConfigured, user?.email]
+    [supabaseConfigured, user?.email, idToken]
   );
 
   useEffect(() => {
@@ -349,8 +349,8 @@ export default function ScenarioLab() {
 
     const init = async () => {
       let stored: StoredChatSession[] = [];
-      if (supabaseConfigured && user?.email) {
-        stored = await fetchChatSessions(user.email);
+      if (supabaseConfigured && user?.email && idToken) {
+        stored = await fetchChatSessions(idToken, user.email);
         if (!cancelled) setSessions(stored);
       } else {
         setSessions([]);
@@ -370,9 +370,9 @@ export default function ScenarioLab() {
       if (resumeSession) {
         setActiveSessionId(resumeSession.id);
         sessionStorage.setItem(SESSION_STORAGE_KEY, resumeSession.id);
-        if (supabaseConfigured) {
+        if (supabaseConfigured && idToken) {
           setLoadingMessages(true);
-          const msgs = await fetchSessionMessages(resumeSession.id);
+          const msgs = await fetchSessionMessages(idToken, resumeSession.id);
           if (!cancelled) {
             setLoadingMessages(false);
             setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt })));
@@ -391,7 +391,7 @@ export default function ScenarioLab() {
     return () => {
       cancelled = true;
     };
-  }, [user?.email, user?.name, authLoading, startNewSession, supabaseConfigured]);
+  }, [user?.email, user?.name, authLoading, startNewSession, supabaseConfigured, idToken]);
 
 
   useEffect(() => {
@@ -409,30 +409,30 @@ export default function ScenarioLab() {
 
   // Load (or bootstrap) knowledge base when user is known
   useEffect(() => {
-    if (!user?.email || !supabaseConfigured) return;
+    if (!user?.email || !supabaseConfigured || !idToken) return;
     let cancelled = false;
     (async () => {
-      let kb = await loadKnowledgeBase(user.email);
+      let kb = await loadKnowledgeBase(idToken);
       if (!kb) {
         // First time: auto-derive personality from existing transactions then save
         const { transactions } = useFinanceStore.getState();
         kb = createEmptyKnowledgeBase();
         kb.spendingPersonality = deriveSpendingPersonality(transactions);
-        await saveKnowledgeBase(user.email, kb);
+        await saveKnowledgeBase(idToken, kb);
       }
       if (!cancelled) setKnowledgeBase(kb);
     })();
     return () => { cancelled = true; };
-  }, [user?.email, supabaseConfigured]);
+  }, [user?.email, supabaseConfigured, idToken]);
 
   const switchSession = async (sessionId: string) => {
     if (sessionId === activeSessionId) return;
     setActiveSessionId(sessionId);
     sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
     setError(null);
-    if (supabaseConfigured) {
+    if (supabaseConfigured && idToken) {
       setLoadingMessages(true);
-      const msgs = await fetchSessionMessages(sessionId);
+      const msgs = await fetchSessionMessages(idToken, sessionId);
       setLoadingMessages(false);
       setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt })));
     } else {
@@ -443,7 +443,7 @@ export default function ScenarioLab() {
 
   const handleDeleteSession = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    await deleteChatSession(sessionId);
+    await deleteChatSession(idToken, sessionId);
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     if (activeSessionId === sessionId) await startNewSession(user?.name);
   };
@@ -465,14 +465,14 @@ export default function ScenarioLab() {
     setAttachment(null);
     setIsLoading(true);
 
-    if (supabaseConfigured && user?.email) {
-      await saveMessage(activeSessionId, user.email, "user", userMessage.content);
+    if (supabaseConfigured && user?.email && idToken) {
+      await saveMessage(idToken, activeSessionId, user.email, "user", userMessage.content);
     }
     const isFirstUserMessage = priorMessages.filter((m) => m.role === "user").length === 0;
     if (isFirstUserMessage) {
       const sessionName = trimmed.length > 40 ? trimmed.slice(0, 40) + "…" : trimmed;
       setSessions((prev) => prev.map((s) => (s.id === activeSessionId ? { ...s, name: sessionName } : s)));
-      if (supabaseConfigured) void renameChatSession(activeSessionId, sessionName);
+      if (supabaseConfigured && idToken) void renameChatSession(idToken, activeSessionId, sessionName);
     }
     try {
       let content = "";
@@ -589,9 +589,22 @@ export default function ScenarioLab() {
                   }
                   updates.targetAmount = recalculatedTarget > 0 ? recalculatedTarget : Number(g.targetAmount) || 0;
                 }
-                if (g.currentAmount !== undefined) updates.currentAmount = Number(g.currentAmount) || 0;
+                // A currentAmount increase is money the user actually put in — record it as a
+                // contribution (so it shows up in Transactions/Dashboard too), not a silent field edit.
+                // A same-or-lower value is treated as a correction and applied directly, with no transaction.
+                let contributionDelta = 0;
+                if (g.currentAmount !== undefined) {
+                  const newAmount = Number(g.currentAmount) || 0;
+                  contributionDelta = newAmount - existingGoal.currentAmount;
+                  if (contributionDelta <= 0) updates.currentAmount = newAmount;
+                }
                 if (typeof g.deadline === "string" && g.deadline) updates.deadline = g.deadline;
-                useFinanceStore.getState().updateGoal(existingGoal.id, updates);
+                if (Object.keys(updates).length > 0) {
+                  useFinanceStore.getState().updateGoal(existingGoal.id, updates);
+                }
+                if (contributionDelta > 0) {
+                  addGoalContribution(existingGoal.id, contributionDelta, new Date().toISOString().split("T")[0]);
+                }
                 updatedGoals++;
               } else {
                 useFinanceStore.getState().addGoal({
@@ -704,8 +717,8 @@ export default function ScenarioLab() {
               const existing = storeBudgets.find((b) => b.category === bd.category);
               if (existing) {
                 deleteBudget(existing.id);
-                if (user?.email && isSupabaseConfigured()) {
-                  await deleteBudgetRow(existing.id);
+                if (user?.email && idToken) {
+                  await deleteBudgetRow(idToken, existing.id);
                 }
                 deletedBudgets++;
               }
@@ -739,10 +752,10 @@ export default function ScenarioLab() {
             // saveBudget upserts on (user_email, category, month), so if a row already
             // existed with a different id, the DB returns its canonical id. We patch the
             // store so deletions and future upserts use the correct DB id.
-            if (user?.email && isSupabaseConfigured()) {
+            if (user?.email && idToken) {
               const dbResults: Budget[] = [];
               for (const b of incoming) {
-                const dbBudget = await saveBudget(user.email, b);
+                const dbBudget = await saveBudget(idToken, b);
                 if (dbBudget) dbResults.push(dbBudget);
               }
               if (dbResults.length > 0) {
@@ -759,8 +772,8 @@ export default function ScenarioLab() {
             const existingKb = knowledgeBase || createEmptyKnowledgeBase();
             const updatedKb = mergeKnowledgeBaseUpdate(existingKb, kbUpdateObj.kb_update as Record<string, unknown>);
             setKnowledgeBase(updatedKb);
-            if (supabaseConfigured) {
-              saveKnowledgeBase(user.email, updatedKb);
+            if (supabaseConfigured && idToken) {
+              saveKnowledgeBase(idToken, updatedKb);
             }
           }
       } catch (err) {
@@ -776,8 +789,8 @@ export default function ScenarioLab() {
           : displayContent,
       };
       setMessages((prev) => [...prev, assistantMessage]);
-      if (supabaseConfigured && user?.email) {
-        await saveMessage(activeSessionId, user.email, "assistant", assistantMessage.content);
+      if (supabaseConfigured && user?.email && idToken) {
+        await saveMessage(idToken, activeSessionId, user.email, "assistant", assistantMessage.content);
       }
     } catch (e) {
       console.error("FinTrack: AI chat failed", e);

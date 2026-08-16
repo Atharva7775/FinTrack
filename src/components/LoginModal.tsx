@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { TrendingUp, Mail, LogIn, X, UserCircle2 } from "lucide-react";
+import { TrendingUp, Mail, LogIn, UserCircle2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,6 @@ import { useState } from "react";
 
 export function LoginModal() {
   const { user, signIn, signInManually, isLoading, gsiReady, gsiBlocked } = useAuth();
-  const [dismissed, setDismissed] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [manualName, setManualName] = useState("");
   const [manualEmail, setManualEmail] = useState("");
@@ -28,8 +27,8 @@ export function LoginModal() {
     signInManually(manualName.trim(), manualEmail.trim());
   };
 
-  // Show modal only when not yet signed in and not dismissed
-  const showModal = !isLoading && !user && !dismissed;
+  // Signing in is mandatory — the modal shows for as long as there's no user, with no way to dismiss it.
+  const showModal = !isLoading && !user;
 
   return (
     <AnimatePresence>
@@ -54,15 +53,6 @@ export function LoginModal() {
             className="fixed inset-0 z-[101] flex items-center justify-center p-4"
           >
             <div className="relative w-full max-w-md rounded-3xl border border-border bg-card shadow-2xl p-8 flex flex-col items-center gap-6">
-              {/* Skip / close */}
-              <button
-                onClick={() => setDismissed(true)}
-                className="absolute top-4 right-4 p-1.5 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                aria-label="Continue without signing in"
-              >
-                <X className="h-4 w-4" />
-              </button>
-
               {/* Logo */}
               <div className="flex flex-col items-center gap-3">
                 <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
@@ -113,12 +103,6 @@ export function LoginModal() {
                       className="text-xs text-muted-foreground hover:text-foreground transition-colors text-center py-1"
                     >
                       Trouble with Google sign-in? Use manual entry →
-                    </button>
-                    <button
-                      onClick={() => setDismissed(true)}
-                      className="text-xs text-muted-foreground hover:text-foreground transition-colors text-center py-1"
-                    >
-                      Continue without signing in
                     </button>
                   </div>
                 </>
@@ -171,13 +155,6 @@ export function LoginModal() {
                       ← Back to Google sign-in
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setDismissed(true)}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors text-center"
-                  >
-                    Continue without signing in
-                  </button>
                 </form>
               )}
             </div>

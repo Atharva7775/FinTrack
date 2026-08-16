@@ -86,7 +86,7 @@ function Confetti() {
 
 // ─── Main component ────────────────────────────────────────────────────────────
 export function OnboardingModal() {
-  const { user } = useAuth();
+  const { user, idToken } = useAuth();
   const {
     hasOnboarded, isHydrated,
     setHasOnboarded, addTransaction, addGoal, setBudgetSplit,
@@ -187,13 +187,13 @@ export function OnboardingModal() {
       });
     }
 
-    // Persist to Supabase
-    if (user?.email) await completeOnboarding(user.email);
+    // Persist to the server
+    if (user?.email) await completeOnboarding(idToken);
     setHasOnboarded(true);
   };
 
   const handleSkip = async () => {
-    if (user?.email) await completeOnboarding(user.email);
+    if (user?.email) await completeOnboarding(idToken);
     setHasOnboarded(true);
   };
 

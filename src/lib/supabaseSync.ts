@@ -1,296 +1,251 @@
-import { getSupabase } from "./supabase";
-import type { Transaction, Goal, GoalContribution, HydratePayload, Budget } from "@/store/financeStore";
+import { apiFetch, ApiAuthError } from "./apiClient";
+import type { Transaction, Goal, HydratePayload, Budget } from "@/store/financeStore";
 
-const SETTINGS_KEYS = {
-  savings: 'savings_balance',
-  budgetSplit: 'budget_split',
-} as const;
+// ─── Server row shapes (snake_case, as returned by server/routes/*.ts) ─────────
 
-/** Fetch all data from Supabase and return in app shape. */
-export async function fetchFromSupabase(userEmail: string): Promise<HydratePayload | null> {
-  const supabase = getSupabase();
-  if (!supabase) return null;
+interface ServerTransaction {
+  id: string;
+  type: string;
+  amount: number;
+  category: string;
+  date: string;
+  note: string | null;
+  original_currency: string | null;
+  original_amount: number | null;
+  usd_amount: number | null;
+  is_pending: boolean | null;
+  source?: string;
+}
+
+interface ServerGoal {
+  id: string;
+  title: string;
+  target_amount: number;
+  current_amount: number;
+  deadline: string;
+  monthly_contribution: number;
+  contributions?: { goal_id: string; amount: number; date: string }[];
+}
+
+interface ServerBudget {
+  id: string;
+  category: string;
+  month: string;
+  type: string;
+  percentage: number | null;
+  fixed_amount: number | null;
+  rollover_balance: number;
+  alert_threshold: number;
+}
+
+function toTransaction(r: ServerTransaction): Transaction {
+  return {
+    id: r.id,
+    type: r.type as Transaction["type"],
+    amount: Number(r.amount),
+    category: r.category as Transaction["category"],
+    date: r.date,
+    note: r.note ?? "",
+    originalCurrency: r.original_currency ?? undefined,
+    originalAmount: r.original_amount != null ? Number(r.original_amount) : undefined,
+    usdAmount: r.usd_amount != null ? Number(r.usd_amount) : undefined,
+    isPending: r.is_pending ?? false,
+    source: r.source,
+  };
+}
+
+function toGoal(r: ServerGoal): Goal {
+  return {
+    id: r.id,
+    title: r.title,
+    targetAmount: Number(r.target_amount),
+    currentAmount: Number(r.current_amount),
+    deadline: r.deadline,
+    monthlyContribution: Number(r.monthly_contribution),
+    contributions: (r.contributions ?? []).map((c) => ({ date: c.date, amount: Number(c.amount) })),
+  };
+}
+
+function toBudget(r: ServerBudget): Budget {
+  return {
+    id: r.id,
+    category: r.category as Budget["category"],
+    month: r.month,
+    type: r.type as Budget["type"],
+    percentage: r.percentage != null ? Number(r.percentage) : undefined,
+    fixedAmount: r.fixed_amount != null ? Number(r.fixed_amount) : undefined,
+    rolloverBalance: Number(r.rollover_balance ?? 0),
+    alertThreshold: Number(r.alert_threshold ?? 80),
+  };
+}
+
+/**
+ * Fetch all data from the server and return in app shape. `idToken` must be a
+ * real, verified Google ID token — manual/demo sign-ins have none, so this
+ * returns null for them and the app stays in-memory-only for that session.
+ */
+export async function fetchFromSupabase(idToken: string | null): Promise<HydratePayload | null> {
+  if (!idToken) return null;
 
   try {
-    const [txRes, goalsRes, contribRes, settingsRes, budgetsRes] = await Promise.all([
-      supabase.from("transactions").select("id, type, amount, category, date, note, original_currency, original_amount, usd_amount, is_pending").eq("user_email", userEmail).order("date", { ascending: false }),
-      supabase.from("goals").select("id, title, target_amount, current_amount, deadline, monthly_contribution").eq("user_email", userEmail).order("created_at", { ascending: true }),
-      supabase.from("goal_contributions").select("goal_id, amount, date").order("date", { ascending: false }),
-      supabase.from("app_settings").select("key, value").in("key", Object.values(SETTINGS_KEYS)).eq("user_email", userEmail),
-      supabase.from("budgets").select("id, category, month, type, percentage, fixed_amount, rollover_balance, alert_threshold").eq("user_email", userEmail).order("created_at", { ascending: true }),
+    const [transactions, goals, settings, budgets] = await Promise.all([
+      apiFetch<ServerTransaction[]>("/api/transactions", idToken),
+      apiFetch<ServerGoal[]>("/api/goals", idToken),
+      apiFetch<Record<string, unknown>>("/api/settings", idToken),
+      apiFetch<ServerBudget[]>("/api/budgets", idToken),
     ]);
 
-    if (txRes.error) throw txRes.error;
-    if (goalsRes.error) throw goalsRes.error;
-    if (contribRes.error) throw contribRes.error;
-    if (budgetsRes.error) {
-      // If the month column doesn't exist yet, log clearly and continue with empty budgets
-      console.error("FinTrack: budget fetch failed — schema may be missing 'month' column. Run the migration in supabase/migrations/007_add_budget_month.sql", budgetsRes.error);
-    }
-    const transactions: Transaction[] = (txRes.data || []).map((r) => ({
-      id: r.id,
-      type: r.type as Transaction["type"],
-      amount: Number(r.amount),
-      category: r.category as Transaction["category"],
-      date: r.date,
-      note: r.note ?? "",
-      originalCurrency: r.original_currency ?? undefined,
-      originalAmount: r.original_amount != null ? Number(r.original_amount) : undefined,
-      usdAmount: r.usd_amount != null ? Number(r.usd_amount) : undefined,
-      isPending: r.is_pending ?? false,
-    }));
-
-    const contributionsByGoal: Record<string, GoalContribution[]> = {};
-    (contribRes.data || []).forEach((r) => {
-      const list = contributionsByGoal[r.goal_id] ?? [];
-      list.push({ date: r.date, amount: Number(r.amount) });
-      contributionsByGoal[r.goal_id] = list;
-    });
-
-    const goals: Goal[] = (goalsRes.data || []).map((r) => ({
-      id: r.id,
-      title: r.title,
-      targetAmount: Number(r.target_amount),
-      currentAmount: Number(r.current_amount),
-      deadline: r.deadline,
-      monthlyContribution: Number(r.monthly_contribution),
-      contributions: contributionsByGoal[r.id] ?? [],
-    }));
-
     let savingsBalance = 0;
-
-    (settingsRes.data || []).forEach(row => {
-      if (row.key === SETTINGS_KEYS.savings && row.value != null) savingsBalance = Number(row.value);
-    });
+    if (typeof settings.savings_balance === "number") savingsBalance = settings.savings_balance;
 
     let budgetSplit: [number, number, number] = [50, 30, 20];
-    const budgetRow = (settingsRes.data || []).find(r => r.key === SETTINGS_KEYS.budgetSplit);
-    if (budgetRow?.value && Array.isArray(budgetRow.value) && budgetRow.value.length === 3) {
-      budgetSplit = budgetRow.value as [number, number, number];
+    if (Array.isArray(settings.budget_split) && settings.budget_split.length === 3) {
+      budgetSplit = settings.budget_split as [number, number, number];
     }
 
-    const currentMonth = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
-    const budgets: Budget[] = (budgetsRes.data || []).map((r) => ({
-      id: r.id,
-      category: r.category as Budget['category'],
-      month: r.month || currentMonth,
-      type: r.type as Budget['type'],
-      percentage: r.percentage != null ? Number(r.percentage) : undefined,
-      fixedAmount: r.fixed_amount != null ? Number(r.fixed_amount) : undefined,
-      rolloverBalance: Number(r.rollover_balance ?? 0),
-      alertThreshold: Number(r.alert_threshold ?? 80),
-    }));
-
-    return { transactions, goals, savingsBalance, budgetSplit, budgets };
+    return {
+      transactions: transactions.map(toTransaction),
+      goals: goals.map(toGoal),
+      savingsBalance,
+      budgetSplit,
+      budgets: budgets.map(toBudget),
+    };
   } catch (e) {
-    console.error("FinTrack: failed to fetch from Supabase", e);
+    console.error("FinTrack: failed to fetch from server", e);
     return null;
   }
 }
 
-/** Write full app state to Supabase (replace all rows for this user). */
-export async function persistToSupabase(userEmail: string, payload: HydratePayload): Promise<boolean> {
-  const supabase = getSupabase();
-  if (!supabase) return false;
+/**
+ * Write full app state to the server (replaces all rows for this user).
+ * Transactions and goals go through the bulk-sync endpoints (one round trip
+ * each, mirroring the old delete-all/insert-all semantics); budgets go
+ * through the existing safe per-row upsert + stale cleanup, same as before.
+ */
+export async function persistToSupabase(idToken: string | null, payload: HydratePayload): Promise<boolean> {
+  if (!idToken) return false;
 
   try {
-    // Replace this user's transactions
-    const existingTx = await supabase.from("transactions").select("id").eq("user_email", userEmail);
-    if (existingTx.data && existingTx.data.length > 0) {
-      const idsToDelete = existingTx.data.map((r) => r.id);
-      for (let i = 0; i < idsToDelete.length; i += 100) {
-        const chunk = idsToDelete.slice(i, i + 100);
-        const { error } = await supabase.from("transactions").delete().in("id", chunk);
-        if (error) throw error;
-      }
-    }
-    if (payload.transactions.length > 0) {
-      const rows = payload.transactions.map((t) => ({
-        id: t.id,
-        user_email: userEmail,
-        type: t.type,
-        amount: t.amount,
-        category: t.category,
-        date: t.date,
-        note: t.note,
-        original_currency: t.originalCurrency ?? null,
-        original_amount: t.originalAmount ?? null,
-        usd_amount: t.usdAmount ?? null,
-        is_pending: t.isPending ?? false,
-      }));
-      const { error } = await supabase.from("transactions").insert(rows);
-      if (error) throw error;
-    }
-
-    // Replace this user's goals
-    const existingGoals = await supabase.from("goals").select("id").eq("user_email", userEmail);
-    if (existingGoals.data && existingGoals.data.length > 0) {
-      const goalIds = existingGoals.data.map((r) => r.id);
-      const { error } = await supabase.from("goals").delete().in("id", goalIds);
-      if (error) throw error;
-    }
-    if (payload.goals.length > 0) {
-      const rows = payload.goals.map((g) => ({
-        id: g.id,
-        user_email: userEmail,
-        title: g.title,
-        target_amount: g.targetAmount,
-        current_amount: g.currentAmount,
-        deadline: g.deadline,
-        monthly_contribution: g.monthlyContribution,
-      }));
-      const { error } = await supabase.from("goals").insert(rows);
-      if (error) throw error;
-    }
-
-    // Replace all goal_contributions
-    const existingContrib = await supabase.from("goal_contributions").select("id");
-    if (existingContrib.data && existingContrib.data.length > 0) {
-      const contribIds = existingContrib.data.map((r) => r.id);
-      for (let i = 0; i < contribIds.length; i += 100) {
-        const chunk = contribIds.slice(i, i + 100);
-        const { error } = await supabase.from("goal_contributions").delete().in("id", chunk);
-        if (error) throw error;
-      }
-    }
-    const allContributions: { goal_id: string; amount: number; date: string }[] = [];
-    payload.goals.forEach((g) => {
-      (g.contributions || []).forEach((c) => allContributions.push({ goal_id: g.id, amount: c.amount, date: c.date }));
+    await apiFetch("/api/transactions/bulk-sync", idToken, {
+      method: "PUT",
+      body: JSON.stringify({
+        transactions: payload.transactions.map((t) => ({
+          id: t.id,
+          type: t.type,
+          amount: t.amount,
+          category: t.category,
+          date: t.date,
+          note: t.note,
+          original_currency: t.originalCurrency ?? null,
+          original_amount: t.originalAmount ?? null,
+          usd_amount: t.usdAmount ?? null,
+          is_pending: t.isPending ?? false,
+          source: t.source ?? "manual",
+        })),
+      }),
     });
-    if (allContributions.length > 0) {
-      const { error } = await supabase.from("goal_contributions").insert(allContributions);
-      if (error) throw error;
-    }
 
-    // Upsert user-scoped app_settings (user_email column ensures per-user isolation)
-    const now = new Date().toISOString();
-    const settingsRows: { key: string; user_email: string; value: unknown; updated_at: string }[] = [
-      { key: SETTINGS_KEYS.savings, user_email: userEmail, value: payload.savingsBalance, updated_at: now },
-    ];
-    if (payload.budgetSplit !== undefined) {
-      settingsRows.push({ key: SETTINGS_KEYS.budgetSplit, user_email: userEmail, value: payload.budgetSplit, updated_at: now });
-    }
-    const { error: settingsError } = await supabase.from("app_settings").upsert(
-      settingsRows,
-      { onConflict: "key,user_email" }
-    );
-    if (settingsError) throw settingsError;
+    await apiFetch("/api/goals/bulk-sync", idToken, {
+      method: "PUT",
+      body: JSON.stringify({
+        goals: payload.goals.map((g) => ({
+          id: g.id,
+          title: g.title,
+          target_amount: g.targetAmount,
+          current_amount: g.currentAmount,
+          deadline: g.deadline,
+          monthly_contribution: g.monthlyContribution,
+          contributions: g.contributions ?? [],
+        })),
+      }),
+    });
 
-    // Sync budgets: safe upsert by (user_email, category, month) — never delete-all first.
+    await apiFetch("/api/settings", idToken, {
+      method: "PUT",
+      body: JSON.stringify({
+        settings: { savings_balance: payload.savingsBalance, budget_split: payload.budgetSplit },
+      }),
+    });
+
+    // Sync budgets: safe upsert by (category, month) — never delete-all first.
     // Individual saveBudget() / deleteBudgetRow() calls are the primary persistence path;
     // this is the background fallback that catches any gaps.
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const validBudgets = (payload.budgets ?? []).filter((b) => UUID_RE.test(b.id));
-    if (validBudgets.length > 0) {
-      const budgetRows = validBudgets.map((b) => ({
-        id: b.id,
-        user_email: userEmail,
-        category: b.category,
-        month: b.month,
-        type: b.type,
-        percentage: b.percentage ?? null,
-        fixed_amount: b.fixedAmount ?? null,
-        rollover_balance: b.rolloverBalance,
-        alert_threshold: b.alertThreshold,
-      }));
-      const { error: budgetUpsertError } = await supabase
-        .from("budgets")
-        .upsert(budgetRows, { onConflict: "user_email,category,month" });
-      if (budgetUpsertError) {
-        console.error("FinTrack: budget upsert failed", budgetUpsertError);
-        // Non-fatal: keep going so transactions/goals are never affected by a budget error
-      } else {
-        // Clean up budgets deleted from the store: remove DB rows whose (category, month)
-        // is no longer represented in the current store state.
-        const currentKeys = new Set(validBudgets.map((b) => `${b.category}|${b.month}`));
-        const { data: dbRows } = await supabase
-          .from("budgets")
-          .select("id, category, month")
-          .eq("user_email", userEmail);
-        if (dbRows) {
-          const staleIds = dbRows
-            .filter((r) => !currentKeys.has(`${r.category}|${r.month}`))
-            .map((r) => r.id);
-          if (staleIds.length > 0) {
-            await supabase.from("budgets").delete().in("id", staleIds);
-          }
-        }
-      }
-    } else {
-      // Store has no budgets — wipe all for this user
-      await supabase.from("budgets").delete().eq("user_email", userEmail);
+
+    await Promise.all(
+      validBudgets.map((b) =>
+        apiFetch("/api/budgets", idToken, {
+          method: "POST",
+          body: JSON.stringify({
+            category: b.category,
+            month: b.month,
+            type: b.type,
+            percentage: b.percentage ?? null,
+            fixed_amount: b.fixedAmount ?? null,
+            rollover_balance: b.rolloverBalance,
+            alert_threshold: b.alertThreshold,
+          }),
+        })
+      )
+    );
+
+    const remoteBudgets = await apiFetch<ServerBudget[]>("/api/budgets", idToken);
+    const currentKeys = new Set(validBudgets.map((b) => `${b.category}|${b.month}`));
+    const staleIds = remoteBudgets.filter((r) => !currentKeys.has(`${r.category}|${r.month}`)).map((r) => r.id);
+    if (staleIds.length > 0) {
+      await Promise.all(staleIds.map((id) => apiFetch(`/api/budgets/${id}`, idToken, { method: "DELETE" })));
     }
 
     return true;
   } catch (e) {
-    console.error("FinTrack: failed to persist to Supabase", e);
+    if (!(e instanceof ApiAuthError)) console.error("FinTrack: failed to persist to server", e);
     return false;
   }
 }
 
 /** Check if this user has already completed onboarding. Returns false if no record exists. */
-export async function fetchOnboardingStatus(userEmail: string): Promise<boolean> {
-  const supabase = getSupabase();
-  if (!supabase) return false;
+export async function fetchOnboardingStatus(idToken: string | null): Promise<boolean> {
+  if (!idToken) return false;
   try {
-    const { data } = await supabase
-      .from("user_onboarding")
-      .select("has_onboarded")
-      .eq("user_email", userEmail)
-      .maybeSingle();
+    const data = await apiFetch<{ has_onboarded: boolean }>("/api/onboarding", idToken);
     return data?.has_onboarded === true;
   } catch {
+    // Covers both "no record yet" (404) and any transient failure — both mean "not onboarded".
     return false;
   }
 }
 
 /** Mark onboarding as completed for this user. */
-export async function completeOnboarding(userEmail: string): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase) return;
+export async function completeOnboarding(idToken: string | null): Promise<void> {
+  if (!idToken) return;
   try {
-    await supabase.from("user_onboarding").upsert(
-      { user_email: userEmail, has_onboarded: true, completed_at: new Date().toISOString() },
-      { onConflict: "user_email" }
-    );
+    await apiFetch("/api/onboarding", idToken, {
+      method: "POST",
+      body: JSON.stringify({ has_onboarded: true }),
+    });
   } catch (e) {
     console.error("FinTrack: failed to save onboarding status", e);
   }
 }
 
 /** Upsert a single budget row for this user. Returns the saved budget (with server-generated id if new). */
-export async function saveBudget(userEmail: string, budget: Budget): Promise<Budget | null> {
-  const supabase = getSupabase();
-  if (!supabase) return null;
+export async function saveBudget(idToken: string | null, budget: Budget): Promise<Budget | null> {
+  if (!idToken) return null;
   try {
-    const row = {
-      id: budget.id,
-      user_email: userEmail,
-      category: budget.category,
-      month: budget.month,
-      type: budget.type,
-      percentage: budget.percentage ?? null,
-      fixed_amount: budget.fixedAmount ?? null,
-      rollover_balance: budget.rolloverBalance,
-      alert_threshold: budget.alertThreshold,
-      updated_at: new Date().toISOString(),
-    };
-    const { data, error } = await supabase
-      .from("budgets")
-      .upsert(row, { onConflict: "user_email,category,month" })
-      .select("id, category, month, type, percentage, fixed_amount, rollover_balance, alert_threshold")
-      .single();
-    if (error) throw error;
-    return {
-      id: data.id,
-      category: data.category as Budget['category'],
-      month: data.month,
-      type: data.type as Budget['type'],
-      percentage: data.percentage != null ? Number(data.percentage) : undefined,
-      fixedAmount: data.fixed_amount != null ? Number(data.fixed_amount) : undefined,
-      rolloverBalance: Number(data.rollover_balance ?? 0),
-      alertThreshold: Number(data.alert_threshold ?? 80),
-    };
+    const saved = await apiFetch<ServerBudget>("/api/budgets", idToken, {
+      method: "POST",
+      body: JSON.stringify({
+        category: budget.category,
+        month: budget.month,
+        type: budget.type,
+        percentage: budget.percentage ?? null,
+        fixed_amount: budget.fixedAmount ?? null,
+        rollover_balance: budget.rolloverBalance,
+        alert_threshold: budget.alertThreshold,
+      }),
+    });
+    return toBudget(saved);
   } catch (e) {
     console.error("FinTrack: failed to save budget", e);
     return null;
@@ -298,11 +253,10 @@ export async function saveBudget(userEmail: string, budget: Budget): Promise<Bud
 }
 
 /** Delete a budget row by id. */
-export async function deleteBudgetRow(budgetId: string): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase) return;
+export async function deleteBudgetRow(idToken: string | null, budgetId: string): Promise<void> {
+  if (!idToken) return;
   try {
-    await supabase.from("budgets").delete().eq("id", budgetId);
+    await apiFetch(`/api/budgets/${budgetId}`, idToken, { method: "DELETE" });
   } catch (e) {
     console.error("FinTrack: failed to delete budget", e);
   }
@@ -310,20 +264,25 @@ export async function deleteBudgetRow(budgetId: string): Promise<void> {
 
 /** Save a monthly budget snapshot (called when a month closes). */
 export async function saveBudgetSnapshot(
-  userEmail: string,
+  idToken: string | null,
   category: string,
   month: string,
   limitAmount: number,
   spent: number,
   rolloverToNext: number
 ): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase) return;
+  if (!idToken) return;
   try {
-    await supabase.from("budget_month_snapshots").upsert(
-      { user_email: userEmail, category, month, limit_amount: limitAmount, spent, rollover_to_next: rolloverToNext },
-      { onConflict: "user_email,category,month" }
-    );
+    await apiFetch("/api/budgets/snapshots", idToken, {
+      method: "POST",
+      body: JSON.stringify({
+        category,
+        month,
+        limit_amount: limitAmount,
+        spent,
+        rollover_to_next: rolloverToNext,
+      }),
+    });
   } catch (e) {
     console.error("FinTrack: failed to save budget snapshot", e);
   }

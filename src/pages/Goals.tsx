@@ -168,8 +168,8 @@ function EditBudgetDialog({ budget, onClose, onSave }: EditBudgetDialogProps) {
   );
 }
 export default function Goals() {
-  const { goals, addGoal, deleteGoal, updateGoal, addGoalContribution, budgets, deleteBudget, updateBudget, setBudgets, transactions } = useFinanceStore();
-  const { user, isLoading: authLoading } = useAuth();
+  const { goals, addGoal, deleteGoal, addGoalContribution, budgets, deleteBudget, updateBudget, setBudgets, transactions } = useFinanceStore();
+  const { user, idToken, isLoading: authLoading } = useAuth();
   const [open, setOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editBudget, setEditBudget] = useState<Budget | null>(null);
@@ -256,7 +256,7 @@ export default function Goals() {
         month: targetMonth,
         rolloverBalance: 0,
       };
-      const result = await saveBudget(user.email, draft);
+      const result = await saveBudget(idToken, draft);
       copied.push(result ?? draft);
     }
     const otherMonths = budgets.filter(bx => bx.month !== targetMonth);
@@ -351,7 +351,11 @@ export default function Goals() {
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">${bs.spent.toFixed(0)} / ${bs.limitAmount.toFixed(0)}</p>
                       </div>
-                      {isCurrentMonth && (
+                      {isCurrentMonth && bs.category === "Savings" ? (
+                        <CursorTooltip content="This budget is generated automatically from your goals' planned monthly contributions. Change a goal's monthly amount to adjust it.">
+                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground bg-muted rounded-full px-2 py-1">Auto · from goals</span>
+                        </CursorTooltip>
+                      ) : isCurrentMonth && (
                         <div className="flex gap-1">
                           <button onClick={() => setEditBudget(budget)} className="p-1.5 rounded-lg hover:bg-accent transition-colors">
                             <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
@@ -359,7 +363,7 @@ export default function Goals() {
                           <button onClick={async () => {
                             deleteBudget(budget.id);
                             if (user?.email) {
-                              await deleteBudgetRow(budget.id);
+                              await deleteBudgetRow(idToken, budget.id);
                             }
                             toast.success(`Removed ${bs.category} budget`);
                           }} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors">
@@ -528,15 +532,22 @@ export default function Goals() {
 
               <CursorTooltip content="Quick-add this amount to the current saved amount for this goal (capped at target).">
                 <div className="mt-3 flex gap-2">
-                  {[50, 100, 200].map((amt) => (
-                    <button
-                      key={amt}
-                      onClick={() => updateGoal(goal.id, { currentAmount: Math.min(goal.currentAmount + amt, goal.targetAmount) })}
-                      className="flex-1 py-1.5 text-xs font-medium rounded-lg bg-muted hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors"
-                    >
-                      +${amt}
-                    </button>
-                  ))}
+                  {[50, 100, 200].map((amt) => {
+                    const capped = Math.min(amt, goal.targetAmount - goal.currentAmount);
+                    return (
+                      <button
+                        key={amt}
+                        disabled={capped <= 0}
+                        onClick={() => {
+                          if (capped <= 0) return;
+                          addGoalContribution(goal.id, capped, new Date().toISOString().slice(0, 10));
+                        }}
+                        className="flex-1 py-1.5 text-xs font-medium rounded-lg bg-muted hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        +${amt}
+                      </button>
+                    );
+                  })}
                 </div>
               </CursorTooltip>
             </motion.div>
@@ -636,7 +647,7 @@ export default function Goals() {
           onClose={() => setEditBudget(null)}
           onSave={async (updated) => {
             if (user?.email) {
-              const result = await saveBudget(user.email, updated);
+              const result = await saveBudget(idToken, updated);
               if (result) {
                 const currentBudgets = useFinanceStore.getState().budgets;
                 const nextBudgets = currentBudgets.map((b) =>

@@ -1,0 +1,112 @@
+FinTrack MCP Pipeline — Explained in Plain English
+====================================================
+
+This walks through the 7 steps in docs/mcp-pipeline-sketch.png using one
+running example, so you can see what actually happens to a question as it
+moves through the system.
+
+Example question: "How much did I spend on dining out last month?"
+
+
+STEP 1 — Client
+----------------
+What's happening: You type your question into the chat box in the app
+(ScenarioLab on web, or the mobile app). Your device packages that question
+up, along with proof of who you are (a login token), and sends it to
+FinTrack's server.
+
+Example: You type "How much did I spend on dining out last month?" and hit
+send. The app sends that sentence to the server, tagged with your Google
+login.
+
+
+STEP 2 — Auth Gate
+-------------------
+What's happening: Before the server does anything else, it checks your
+login token is real and not expired or faked. Once confirmed, it pulls out
+your verified email address and attaches it to the request — this is the
+email that will be used for every database lookup from here on, no matter
+what.
+
+Example: The server checks your Google token, confirms it's really you
+(atharva@example.com), and stamps that email onto your question internally.
+You never see this step — it just guarantees nobody can pretend to be you
+or peek at someone else's spending.
+
+
+STEP 3 — Planner LLM
+----------------------
+What's happening: An AI model reads your question and figures out, in a
+structured way, WHAT you're actually asking for — which table of data,
+what kind of calculation, and what filters (like a month or category). It
+doesn't answer the question yet — it just writes down a plan for how to
+get the answer.
+
+Example: The AI reads "How much did I spend on dining out last month?" and
+produces a plan like:
+    table: transactions
+    operation: sum
+    filters: category = "dining", type = "expense"
+    month: last month
+It's like a translator turning your everyday sentence into a form a
+librarian could act on.
+
+
+STEP 4 — Plan Validator
+-------------------------
+What's happening: Before the plan is allowed to touch any real data, a
+strict checker looks it over. It only allows a small set of safe
+operations (sum, average, count, top categories, etc.) on a small set of
+known tables (transactions, goals, budgets). If the plan asks for anything
+outside that — or tries to sneak in someone else's email — it gets
+rejected. It also throws away whatever email the AI plan might have
+guessed and replaces it with your real, verified email from 
+Step 2.
+
+Example: The plan from Step 3 (sum of dining expenses, last month) is
+checked — "sum" is allowed, "transactions" is allowed, the filters make
+sense — so it's approved, and your verified email is locked in. If the AI
+had instead produced something odd, like "delete all transactions" or
+"show me bob@email.com's spending," this step would block it and the
+system would just ask you to rephrase your question instead of guessing.
+
+
+STEP 5 — Query Executor
+--------------------------
+What's happening: Now that the plan is approved, the server runs one exact,
+pre-written type of database lookup — no AI guesswork involved, just plain
+arithmetic on your real records.
+
+Example: The server runs the equivalent of "add up every expense
+transaction where category = dining and date is in last month" against
+your actual transaction history, and gets back a real number — say,
+$187.40.
+
+
+STEP 6 — Narrator LLM
+------------------------
+What's happening: A second AI step takes that real number (and your
+original question) and turns it into a natural, helpful sentence — the
+kind of reply a financial advisor might give, not just a bare number.
+
+Example: Given "$187.40" and "How much did I spend on dining out last
+month?", the AI writes something like: "You spent $187.40 on dining out
+last month. That's about 12% of your total spending for the month."
+
+
+STEP 7 — Response
+--------------------
+What's happening: The finished answer is sent back to the app and shown
+to you in the chat window.
+
+Example: You see FinTrack's reply appear on screen: "You spent $187.40 on
+dining out last month. That's about 12% of your total spending for the
+month."
+
+
+THE SAFETY VALVE (dashed path in the diagram)
+------------------------------------------------
+If Step 4 rejects the plan — say you asked something the system doesn't
+know how to turn into a safe query — it skips Steps 5 and 6 entirely and
+sends back a short message asking you to rephrase, instead of letting the
+AI make something up or touch the database with an unchecked request.

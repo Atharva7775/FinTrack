@@ -54,6 +54,22 @@ const STORAGE_KEY = "fintrack_google_user";
 const TOKEN_STORAGE_KEY = "fintrack_google_id_token";
 const CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+const API_BASE_URL = (import.meta.env.VITE_CHAT_API_URL || "http://localhost:3001").replace(/\/$/, "");
+
+/**
+ * Fire-and-forget: asks the server to send a welcome email if this is this
+ * email's first-ever sign-in. Only called with a real, verifiable Google ID
+ * token — manual/demo sign-ins are skipped since there's no way to confirm
+ * the typed email actually belongs to whoever's typing.
+ */
+function triggerWelcomeEmail(idToken: string) {
+  fetch(`${API_BASE_URL}/api/email/welcome`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${idToken}` },
+  }).catch(() => {
+    // Non-critical — sign-in must never fail because the welcome email couldn't be sent.
+  });
+}
 
 declare global {
   interface Window {
@@ -198,6 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setIdToken(response.credential);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(decoded));
           localStorage.setItem(TOKEN_STORAGE_KEY, response.credential);
+          triggerWelcomeEmail(response.credential);
         } else {
           toast.error("Could not read Google sign-in response");
         }

@@ -8,7 +8,8 @@ import { SEED_TRANSACTIONS } from "@/lib/seedData";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
-import { isSupabaseConfigured, getSupabase } from "@/lib/supabase";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { apiFetch } from "@/lib/apiClient";
 import {
   loadKnowledgeBase,
   saveKnowledgeBase,
@@ -24,7 +25,7 @@ export default function SettingsPage() {
     addTransaction
   } = useFinanceStore();
 
-  const { user } = useAuth();
+  const { user, idToken } = useAuth();
   const supabaseConfigured = isSupabaseConfigured();
 
   // ─── Telegram state ────────────────────────────────────────────────────────
@@ -36,19 +37,13 @@ export default function SettingsPage() {
 
   // Check on mount if this user already has a Telegram link
   useEffect(() => {
-    if (!user?.email || !supabaseConfigured) return;
-    const supabase = getSupabase();
-    if (!supabase) return;
-    supabase
-      .from("app_settings")
-      .select("key")
-      .like("key", "telegram_user_%")
-      .eq("user_email", user.email)
-      .limit(1)
-      .then(({ data }) => {
-        if ((data ?? []).length > 0) setTelegramStatus("linked");
-      });
-  }, [user?.email, supabaseConfigured]);
+    if (!user?.email || !supabaseConfigured || !idToken) return;
+    apiFetch<{ linked: boolean }>("/api/telegram-link/status", idToken)
+      .then(({ linked }) => {
+        if (linked) setTelegramStatus("linked");
+      })
+      .catch(() => {});
+  }, [user?.email, supabaseConfigured, idToken]);
 
   // Cleanup poll on unmount
   useEffect(() => {
@@ -58,32 +53,20 @@ export default function SettingsPage() {
   }, []);
 
   const handleGenerateTelegramLink = async () => {
-    if (!user?.email) return;
-    const supabase = getSupabase();
-    if (!supabase) return;
+    if (!user?.email || !idToken) return;
 
-    const token = crypto.randomUUID();
-    const key = `pending_telegram_link_${token}`;
-    await supabase.from("app_settings").upsert(
-      { key, user_email: user.email, value: user.email, updated_at: new Date().toISOString() },
-      { onConflict: "key,user_email" }
-    );
+    const { token } = await apiFetch<{ token: string }>("/api/telegram-link/generate", idToken, { method: "POST" });
     setTelegramToken(token);
     setTelegramStatus("pending");
 
     // Clear any previous poll
     if (telegramPollRef.current) clearInterval(telegramPollRef.current);
 
-    // Poll every 2.5 seconds — if the pending key disappears, bot consumed it = linked
+    // Poll every 2.5 seconds — once the bot consumes the pending token, it's linked
     telegramPollRef.current = setInterval(async () => {
-      const { data } = await supabase
-        .from("app_settings")
-        .select("key")
-        .eq("key", key)
-        .eq("user_email", user.email)
-        .maybeSingle();
+      const { linked } = await apiFetch<{ linked: boolean }>(`/api/telegram-link/poll/${token}`, idToken);
 
-      if (!data) {
+      if (linked) {
         clearInterval(telegramPollRef.current!);
         telegramPollRef.current = null;
         setTelegramStatus("linked");
@@ -94,17 +77,8 @@ export default function SettingsPage() {
   };
 
   const handleUnlinkTelegram = async () => {
-    if (!user?.email) return;
-    const supabase = getSupabase();
-    if (!supabase) return;
-    const { data } = await supabase
-      .from("app_settings")
-      .select("key")
-      .like("key", "telegram_user_%")
-      .eq("user_email", user.email);
-    for (const row of data ?? []) {
-      await supabase.from("app_settings").delete().eq("key", row.key).eq("user_email", user.email);
-    }
+    if (!user?.email || !idToken) return;
+    await apiFetch("/api/telegram-link", idToken, { method: "DELETE" });
     if (telegramPollRef.current) { clearInterval(telegramPollRef.current); telegramPollRef.current = null; }
     setTelegramStatus("idle");
     setTelegramToken(null);
@@ -118,19 +92,19 @@ export default function SettingsPage() {
   const [confirmClear, setConfirmClear] = useState(false);
 
   useEffect(() => {
-    if (!user?.email || !supabaseConfigured) return;
+    if (!user?.email || !supabaseConfigured || !idToken) return;
     setKbLoading(true);
-    loadKnowledgeBase(user.email).then(loaded => {
+    loadKnowledgeBase(idToken).then(loaded => {
       setKb(loaded || createEmptyKnowledgeBase());
       setKbLoading(false);
     });
-  }, [user?.email, supabaseConfigured]);
+  }, [user?.email, supabaseConfigured, idToken]);
 
   const handleDeleteNote = async (idx: number) => {
     if (!kb || !user?.email) return;
     const updated = { ...kb, aiNotes: kb.aiNotes.filter((_, i) => i !== idx), lastUpdated: new Date().toISOString() };
     setKb(updated);
-    await saveKnowledgeBase(user.email, updated);
+    await saveKnowledgeBase(idToken, updated);
     toast.success("Note removed from AI memory");
   };
 
@@ -139,7 +113,7 @@ export default function SettingsPage() {
     const { transactions: txs } = useFinanceStore.getState();
     const fresh = createEmptyKnowledgeBase();
     fresh.spendingPersonality = deriveSpendingPersonality(txs);
-    await saveKnowledgeBase(user.email, fresh);
+    await saveKnowledgeBase(idToken, fresh);
     setKb(fresh);
     setConfirmClear(false);
     toast.success("AI memory cleared");
@@ -150,7 +124,7 @@ export default function SettingsPage() {
     const { transactions: txs } = useFinanceStore.getState();
     const updated = { ...kb, spendingPersonality: deriveSpendingPersonality(txs), lastUpdated: new Date().toISOString() };
     setKb(updated);
-    await saveKnowledgeBase(user.email, updated);
+    await saveKnowledgeBase(idToken, updated);
     toast.success("Spending personality re-derived from your transaction history");
   };
 

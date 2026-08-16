@@ -1,4 +1,4 @@
-import { getSupabase } from "./supabase";
+import { apiFetch } from "./apiClient";
 import type { Transaction } from "@/store/financeStore";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -231,20 +231,12 @@ export function mergeKnowledgeBaseUpdate(
 
 const KB_KEY = 'ai_knowledge_base';
 
-export async function loadKnowledgeBase(userEmail: string): Promise<UserKnowledgeBase | null> {
-  const supabase = getSupabase();
-  if (!supabase || !userEmail) return null;
+export async function loadKnowledgeBase(idToken: string | null): Promise<UserKnowledgeBase | null> {
+  if (!idToken) return null;
 
   try {
-    const { data, error } = await supabase
-      .from('app_settings')
-      .select('value')
-      .eq('key', KB_KEY)
-      .eq('user_email', userEmail)
-      .maybeSingle();
-
-    if (error || !data) return null;
-    const kb = data.value as UserKnowledgeBase;
+    const settings = await apiFetch<Record<string, unknown>>("/api/settings", idToken);
+    const kb = settings[KB_KEY] as UserKnowledgeBase | undefined;
     if (!kb || typeof kb !== 'object' || !kb.version) return null;
     return kb;
   } catch {
@@ -252,15 +244,14 @@ export async function loadKnowledgeBase(userEmail: string): Promise<UserKnowledg
   }
 }
 
-export async function saveKnowledgeBase(userEmail: string, kb: UserKnowledgeBase): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase || !userEmail) return;
+export async function saveKnowledgeBase(idToken: string | null, kb: UserKnowledgeBase): Promise<void> {
+  if (!idToken) return;
 
   try {
-    await supabase.from('app_settings').upsert(
-      { key: KB_KEY, user_email: userEmail, value: kb, updated_at: new Date().toISOString() },
-      { onConflict: 'key,user_email' }
-    );
+    await apiFetch("/api/settings", idToken, {
+      method: "PUT",
+      body: JSON.stringify({ settings: { [KB_KEY]: kb } }),
+    });
   } catch (e) {
     console.warn('FinTrack: failed to save knowledge base', e);
   }

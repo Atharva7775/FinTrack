@@ -72,7 +72,7 @@ interface Props {
 
 export function BudgetSetupWizard({ open, onClose, month: monthProp }: Props) {
   const targetMonth = monthProp ?? getCurrentMonthKey();
-  const { user } = useAuth();
+  const { user, idToken } = useAuth();
   const { budgets: storeBudgets, setBudgets, transactions, goals } = useFinanceStore();
   const [step, setStep] = useState(0);
   const [selectedTemplate, setSelectedTemplate] = useState<number | null>(null);
@@ -125,7 +125,6 @@ export function BudgetSetupWizard({ open, onClose, month: monthProp }: Props) {
     if (!user?.email) return;
     setSaving(true);
     try {
-      const userEmail = user.email;
       const saved: Budget[] = [];
       for (const wb of budgets) {
         if ((wb.type === "percentage" && (wb.percentage ?? 0) === 0) ||
@@ -140,7 +139,7 @@ export function BudgetSetupWizard({ open, onClose, month: monthProp }: Props) {
           rolloverBalance: 0,
           alertThreshold: wb.alertThreshold,
         };
-        const result = await saveBudget(userEmail, draft);
+        const result = await saveBudget(idToken, draft);
         saved.push(result ?? draft);
       }
       // Merge: keep budgets from other months, replace the target month

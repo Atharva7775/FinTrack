@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getCurrentMonthKey } from '@/lib/utils';
 import type {
   TransactionType,
   Category,
@@ -39,6 +40,33 @@ export type {
 };
 export { incomeCategories, expenseCategories, CATEGORY_TYPE, categoryColors };
 
+const SAVINGS_BUDGET_CATEGORY: Category = 'Savings';
+
+/**
+ * Keeps a single "Savings" budget in sync with the total monthly contribution
+ * committed across all goals, for the current month. This is the only budget
+ * category goals ever touch — every other category stays under manual control
+ * via BudgetSetupWizard. Called from every action that can change `goals` or
+ * replace `budgets` wholesale, so the derived row can never drift or get
+ * silently dropped by an unrelated budget save.
+ */
+function syncSavingsBudget(goals: Goal[], budgets: Budget[]): Budget[] {
+  const month = getCurrentMonthKey();
+  const total = goals.reduce((sum, g) => sum + (g.monthlyContribution || 0), 0);
+  const others = budgets.filter((b) => !(b.category === SAVINGS_BUDGET_CATEGORY && b.month === month));
+  if (total <= 0) return others;
+  const existing = budgets.find((b) => b.category === SAVINGS_BUDGET_CATEGORY && b.month === month);
+  const savingsBudget: Budget = {
+    id: existing?.id ?? crypto.randomUUID(),
+    category: SAVINGS_BUDGET_CATEGORY,
+    month,
+    type: 'fixed',
+    fixedAmount: total,
+    rolloverBalance: existing?.rolloverBalance ?? 0,
+    alertThreshold: existing?.alertThreshold ?? 80,
+  };
+  return [...others, savingsBudget];
+}
 
 interface FinanceStore {
   transactions: Transaction[];
@@ -69,15 +97,13 @@ interface FinanceStore {
   /** True once the user has saved at least one budget */
   hasBudgetSetup: boolean;
   setHasBudgetSetup: (v: boolean) => void;
-  /** Load data from database; also resets nextId from max existing id */
+  /** Load data from database */
   hydrate: (payload: HydratePayload) => void;
   /** Reset store to empty state (used on sign-out or user change) */
   clearStore: () => void;
   userCategoryType: UserCategoryTypeOverrides;
   setCategoryType: (category: Category, type: CategoryType) => void;
 }
-
-let nextId = 1;
 
 export const useFinanceStore = create<FinanceStore>((set, get) => ({
   transactions: [],
@@ -89,7 +115,10 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
   isHydrated: false,
   setIsHydrated: (v) => set({ isHydrated: v }),
   budgets: [],
-  setBudgets: (budgets) => set({ budgets, hasBudgetSetup: budgets.length > 0 }),
+  setBudgets: (budgets) => set((s) => {
+    const next = syncSavingsBudget(s.goals, budgets);
+    return { budgets: next, hasBudgetSetup: next.length > 0 };
+  }),
   addBudget: (b) => set((s) => {
     const budget = { ...b, id: crypto.randomUUID() };
     return { budgets: [...s.budgets, budget], hasBudgetSetup: true };
@@ -105,7 +134,7 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
   setHasBudgetSetup: (v) => set({ hasBudgetSetup: v }),
   setBudgetSplit: (split) => set({ budgetSplit: split }),
   addTransaction: (t) => set((s) => ({
-    transactions: [{ ...t, id: String(nextId++) }, ...s.transactions],
+    transactions: [{ ...t, id: crypto.randomUUID() }, ...s.transactions],
   })),
   deleteTransaction: (id) => set((s) => ({
     transactions: s.transactions.filter((t) => t.id !== id),
@@ -114,20 +143,23 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
     transactions: s.transactions.map((t) => t.id === id ? { ...t, ...updates } : t),
   })),
   /** Add a new goal to the store */
-  addGoal: (g) => set((s) => ({
-    goals: [...s.goals, { ...g, id: String(nextId++), contributions: [] }],
-  })),
+  addGoal: (g) => set((s) => {
+    const goals = [...s.goals, { ...g, id: crypto.randomUUID(), contributions: [] }];
+    return { goals, budgets: syncSavingsBudget(goals, s.budgets) };
+  }),
   /** Edit a transaction by id */
   editTransaction: (id, updates) => set((s) => ({
     transactions: s.transactions.map((t) => t.id === id ? { ...t, ...updates } : t),
   })),
-  updateGoal: (id, updates) => set((s) => ({
-    goals: s.goals.map((g) => g.id === id ? { ...g, ...updates } : g),
-  })),
+  updateGoal: (id, updates) => set((s) => {
+    const goals = s.goals.map((g) => g.id === id ? { ...g, ...updates } : g);
+    return { goals, budgets: syncSavingsBudget(goals, s.budgets) };
+  }),
   deleteGoal: async (id) => {
-    set((s) => ({
-      goals: s.goals.filter((g) => g.id !== id),
-    }));
+    set((s) => {
+      const goals = s.goals.filter((g) => g.id !== id);
+      return { goals, budgets: syncSavingsBudget(goals, s.budgets) };
+    });
   },
   addGoalContribution: (goalId, amount, date) => set((s) => {
     const goal = s.goals.find((g) => g.id === goalId);
@@ -140,7 +172,7 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
       note: `Contribution to ${title}`,
     };
     return {
-      transactions: [{ ...newTx, id: String(nextId++) }, ...s.transactions],
+      transactions: [{ ...newTx, id: crypto.randomUUID() }, ...s.transactions],
       goals: s.goals.map((g) => {
         if (g.id !== goalId) return g;
         const contributions = [...(g.contributions || []), { date, amount }];
@@ -150,14 +182,10 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
   }),
   setSavingsBalance: (amount) => set({ savingsBalance: amount }),
   hydrate: (payload) => {
-    let maxId = 0;
-    payload.transactions.forEach((t) => { const n = parseInt(t.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
-    payload.goals.forEach((g) => { const n = parseInt(g.id, 10); if (!isNaN(n)) maxId = Math.max(maxId, n); });
-    nextId = maxId + 1;
-    const budgets = payload.budgets ?? [];
-    set({ 
-      transactions: payload.transactions, 
-      goals: payload.goals, 
+    const budgets = syncSavingsBudget(payload.goals, payload.budgets ?? []);
+    set({
+      transactions: payload.transactions,
+      goals: payload.goals,
       savingsBalance: payload.savingsBalance,
       budgetSplit: payload.budgetSplit || [50, 30, 20],
       budgets,
@@ -165,7 +193,6 @@ export const useFinanceStore = create<FinanceStore>((set, get) => ({
     });
   },
   clearStore: () => {
-    nextId = 1;
     set({
       transactions: [],
       goals: [],

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useFinanceStore } from "@/store/financeStore";
 import { useAuth } from "@/hooks/useAuth";
-import { getSupabase } from "@/lib/supabase";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import { fetchFromSupabase, persistToSupabase, fetchOnboardingStatus } from "@/lib/supabaseSync";
 import { SEED_TRANSACTIONS } from "@/lib/seedData";
 import type { HydratePayload } from "@/store/financeStore";
@@ -42,15 +42,22 @@ function writeLocalFallback(userEmail: string, payload: HydratePayload) {
 }
 
 /**
- * If Supabase env is set: on mount (or when the logged-in user changes) loads
- * that user's data from DB into the store, then persists changes after a debounce.
+ * If Supabase is configured AND this sign-in has a verified Google ID token:
+ * on mount (or when the logged-in user changes) loads that user's data from
+ * the server into the store, then persists changes after a debounce.
+ *
+ * Manual/demo sign-ins have no verifiable token, so the server (which now
+ * requires one for every write — see server/routes/*.ts) can't authenticate
+ * them. They fall back to the same local-only path used when Supabase isn't
+ * configured at all: data still persists, just to this device/browser only.
+ *
  * Clears the store when no user is logged in so data never bleeds between accounts.
  */
 export function SupabaseSync() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHydratedRef = useRef(false);
   const latestPayloadRef = useRef<HydratePayload | null>(null);
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, idToken, isLoading: authLoading } = useAuth();
 
   useEffect(() => {
     // Wait until auth is resolved
@@ -63,8 +70,10 @@ export function SupabaseSync() {
       return;
     }
 
-    // Without Supabase: load local fallback state (or seed data) and persist locally.
-    if (!getSupabase()) {
+    // No server-verifiable identity (Supabase not configured, or a manual/demo
+    // sign-in with no real Google token): load local fallback state (or seed
+    // data) and persist locally only.
+    if (!isSupabaseConfigured() || !idToken) {
       const userEmail = user.email;
       const local = readLocalFallback(userEmail);
       useFinanceStore.getState().hydrate(
@@ -112,18 +121,17 @@ export function SupabaseSync() {
       };
     }
 
-    const userEmail = user.email;
     isHydratedRef.current = false;
     const persistRemoteNow = () => {
       const payload = latestPayloadRef.current;
       if (!payload) return;
-      void persistToSupabase(userEmail, payload);
+      void persistToSupabase(idToken, payload);
     };
 
     (async () => {
       const [data, hasOnboarded] = await Promise.all([
-        fetchFromSupabase(userEmail),
-        fetchOnboardingStatus(userEmail),
+        fetchFromSupabase(idToken),
+        fetchOnboardingStatus(idToken),
       ]);
 
       if (data) {
@@ -170,7 +178,7 @@ export function SupabaseSync() {
       // Best-effort flush so closing/reloading right after edits does not lose changes.
       persistRemoteNow();
     };
-  }, [user, authLoading]);
+  }, [user, idToken, authLoading]);
 
   return null;
 }

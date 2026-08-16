@@ -55,9 +55,9 @@ transactionsRouter.use(requireGoogleAuth);
  */
 transactionsRouter.get("/", async (req: Request, res: Response) => {
   const authenticatedReq = req as AuthenticatedRequest;
-  const { user_email, type, from, to } = req.query as Record<string, string>;
-  const resolvedUserEmail = user_email || authenticatedReq.authUser?.email;
-  if (!resolvedUserEmail) return res.status(400).json({ error: "user_email is required" });
+  const { type, from, to } = req.query as Record<string, string>;
+  const resolvedUserEmail = authenticatedReq.authUser?.email;
+  if (!resolvedUserEmail) return res.status(401).json({ error: "Missing authenticated user context" });
 
   try {
     let query = getSupabase()
@@ -118,10 +118,10 @@ transactionsRouter.get("/", async (req: Request, res: Response) => {
  */
 transactionsRouter.post("/", async (req: Request, res: Response) => {
   const authenticatedReq = req as AuthenticatedRequest;
-  const { user_email, ...rest } = req.body;
-  const resolvedUserEmail = user_email || authenticatedReq.authUser?.email;
+  const { user_email: _ignoredUserEmail, ...rest } = req.body;
+  const resolvedUserEmail = authenticatedReq.authUser?.email;
 
-  if (!resolvedUserEmail) return res.status(400).json({ error: "user_email is required" });
+  if (!resolvedUserEmail) return res.status(401).json({ error: "Missing authenticated user context" });
   if (!rest.id || !rest.type || rest.amount == null || !rest.category || !rest.date) {
     return res.status(400).json({ error: "id, type, amount, category, date are required" });
   }
@@ -199,11 +199,75 @@ transactionsRouter.post("/", async (req: Request, res: Response) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
+/**
+ * @openapi
+ * /api/transactions/bulk-sync:
+ *   put:
+ *     summary: Replace all of the authenticated user's transactions in one call
+ *     description: Used by the web client's debounced full-state sync. Deletes every existing transaction for this user, then inserts the given list — mirrors the previous client-side delete-all/insert-all behavior, now server-side and authenticated.
+ *     tags: [Transactions]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [transactions]
+ *             properties:
+ *               transactions:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/Transaction'
+ *     responses:
+ *       204:
+ *         description: Synced successfully
+ *       401:
+ *         description: Missing or invalid auth
+ *       500:
+ *         description: Supabase error
+ */
+transactionsRouter.put("/bulk-sync", async (req: Request, res: Response) => {
+  const userEmail = (req as AuthenticatedRequest).authUser?.email;
+  if (!userEmail) return res.status(401).json({ error: "Missing authenticated user context" });
+  const transactions = Array.isArray(req.body?.transactions) ? req.body.transactions : null;
+  if (!transactions) return res.status(400).json({ error: "transactions array is required" });
+
+  try {
+    const { error: deleteError } = await getSupabase()
+      .from("transactions")
+      .delete()
+      .eq("user_email", userEmail);
+    if (deleteError) throw deleteError;
+
+    if (transactions.length > 0) {
+      const rows = transactions.map((t) => ({
+        id: String(t.id),
+        user_email: userEmail,
+        type: String(t.type),
+        amount: Number(t.amount),
+        category: String(t.category),
+        date: String(t.date),
+        note: t.note != null ? String(t.note) : "",
+        source: t.source != null ? String(t.source) : "manual",
+        is_pending: Boolean(t.is_pending ?? false),
+        original_currency: t.original_currency ?? null,
+        original_amount: t.original_amount != null ? Number(t.original_amount) : null,
+        usd_amount: t.usd_amount != null ? Number(t.usd_amount) : null,
+      }));
+      const { error: insertError } = await getSupabase().from("transactions").insert(rows);
+      if (insertError) throw insertError;
+    }
+
+    res.status(204).send();
+  } catch (e: unknown) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
 transactionsRouter.delete("/:id", async (req: Request, res: Response) => {
   const authenticatedReq = req as AuthenticatedRequest;
-  const { user_email } = req.query as Record<string, string>;
-  const resolvedUserEmail = user_email || authenticatedReq.authUser?.email;
-  if (!resolvedUserEmail) return res.status(400).json({ error: "user_email is required" });
+  const resolvedUserEmail = authenticatedReq.authUser?.email;
+  if (!resolvedUserEmail) return res.status(401).json({ error: "Missing authenticated user context" });
 
   try {
     const { error } = await getSupabase()
